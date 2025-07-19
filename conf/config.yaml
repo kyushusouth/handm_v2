@@ -1,0 +1,124 @@
+seed: 42
+data:
+  articles_path: data/articles.csv
+  customers_path: data/customers.csv
+  transactions_path: data/transactions_train.csv
+  past_start_date: 2020-09-01
+  past_end_date: 2020-09-04
+  train_start_date: 2020-09-05
+  train_end_date: 2020-09-05
+  val_start_date: 2020-09-06
+  val_end_date: 2020-09-06
+  test_start_date: 2020-09-07
+  test_end_date: 2020-09-07
+  chunksize: 10000
+candidates:
+  popular:
+    topk: 20
+  age_popular:
+    topk: 20
+  most_freq_cat_popular:
+    topk: 20
+  similar:
+    min_df: 3
+    topk: 20
+  item2vec:
+    topk: 20
+  cooc:
+    topk: 20
+  node2vec:
+    topk: 20
+  transition:
+    topk: 20
+  use:
+    [
+      "popular",
+      "age_popular",
+      "user_past",
+      "most_freq_cat_popular",
+      "similar",
+      "same_product",
+      "transition",
+      # "item2vec",
+      # "cooc",
+      # "node2vec",
+    ]
+model:
+  features:
+    num:
+      [
+        "item_purchase_cnt",
+        "item_purchase_nunique",
+        "item_days_since_last_purchase",
+        "item_price_mean",
+        "item_price_std",
+        "user_purchase_cnt",
+        "user_purchase_nunique",
+        "user_days_since_last_purchase",
+        "user_price_mean",
+        "user_price_std",
+        "user_price_sum",
+        "user_item_purchase_cnt",
+        "age",
+        "embedding_affinity_score",
+        # "source_user_past",
+        # "source_similar",
+        # "source_same_product",
+        # "source_top_cat",
+        # "source_age",
+        # "source_popular",
+        # "source_item2vec",
+        # "source_cooc",
+        # "source_node2vec",
+        # "source_transition",
+      ]
+    cat:
+      [
+        "FN",
+        "Active",
+        "club_member_status",
+        "fashion_news_frequency",
+        "colour_group_name",
+        "department_name",
+        "department_no",
+        "garment_group_name",
+        "graphical_appearance_name",
+        "index_group_name",
+        "index_name",
+        "perceived_colour_master_name",
+        "perceived_colour_value_name",
+        "product_group_name",
+        "product_type_name",
+        "section_name",
+      ]
+  params:
+    lgb:
+      objective: lambdarank
+      eval_metric: ["ndcg", "map"]
+      eval_at: [1, 3, 5, 10]
+      max_depth: 5
+      learning_rate: 0.001
+      n_estimators: 1000
+      importance_type: gain
+      early_stopping_round: 50
+    item2vec:
+      vector_size: 16
+      window: 5
+      min_count: 3
+      workers: 1
+      sg: 1
+    cooc:
+      n_components: 16
+      use_ppmi: true
+    node2vec:
+      dimensions: 16
+      p: 1.0
+      q: 1.0
+      walk_length: 5
+      num_walks: 20
+      workers: 1
+      window: 8
+      min_count: 5
+exp:
+  num_rec: 10
+  ks: [1, 3, 5, 10]
