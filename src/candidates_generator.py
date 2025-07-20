@@ -385,5 +385,6 @@ class CandidatesGenerator:
 
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
         sns.barplot(metrics_df, x="source", y="recall", hue="kind", ax=ax)
-        fig.tight_layout()
-        fig.savefig(result_dir.joinpath("candidates_recall.png"))
+        plt.tight_layout()
+        plt.savefig(result_dir.joinpath("candidates_recall.png"))
+        plt.close(fig)

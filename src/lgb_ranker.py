@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import shap
 from sklearn.preprocessing import LabelEncoder
 
 from src.dataset import Dataset
@@ -14,7 +15,7 @@ from src.metrics_calculator import MetricsCalculator
 from src.schema.config import Config
 
 
-class Ranker:
+class LGBRanker:
     def __init__(self, cfg: Config, metrics_calculator: MetricsCalculator) -> None:
         self.cfg = cfg
         self.metrics_calculator = metrics_calculator
@@ -237,7 +238,7 @@ class Ranker:
         self.val_trans_df = val_trans_df.sort_values("customer_id")
         self.test_trans_df = test_trans_df.sort_values("customer_id")
 
-    def train(self) -> "Ranker":
+    def train(self, result_dir: Path) -> "LGBRanker":
         self.ranker = lgb.LGBMRanker(
             objective=self.cfg.model.params.lgb.objective,
             metric=self.cfg.model.params.lgb.eval_metric,
@@ -273,6 +274,44 @@ class Ranker:
                 )
             ],
         )
+
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        metric_colormaps = {"ndcg": "Blues", "map": "Oranges"}
+        eval_at_list = self.cfg.model.params.lgb.eval_at
+        num_k_values = len(eval_at_list)
+        for metric_name, base_cmap_name in metric_colormaps.items():
+            cmap = plt.get_cmap(base_cmap_name)
+            colors = [cmap(i) for i in np.linspace(0.3, 0.9, num_k_values)]
+            for i, k in enumerate(eval_at_list):
+                label = f"{metric_name}@{k}"
+                metric_values = self.ranker.evals_result_["valid_0"][label]
+                ax.plot(metric_values, color=colors[i], label=label)
+        ax.set_xlabel("Iterations")
+        ax.set_ylabel("Score")
+        ax.legend(title="Metrics", bbox_to_anchor=(1, 1), loc="upper left")
+        plt.tight_layout()
+        plt.savefig(result_dir.joinpath("ranker_learning_curve.png"))
+        plt.close(fig)
+
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        lgb.plot_importance(
+            self.ranker, ax=ax, max_num_features=10, importance_type="gain"
+        )
+        plt.tight_layout()
+        plt.savefig(result_dir.joinpath("ranker_feature_importance.png"))
+        plt.close(fig)
+
+        explainer = shap.TreeExplainer(self.ranker)
+        shap_samples = self.val_trans_df.sample(
+            self.cfg.exp.summary_plot_num_sample, random_state=self.cfg.seed
+        )[self.cfg.model.features.cat + self.cfg.model.features.num]
+        shap_values = explainer.shap_values(shap_samples)
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        shap.summary_plot(shap_values, shap_samples, plot_type="bar", show=False)
+        plt.tight_layout()
+        plt.savefig(result_dir.joinpath("shap_summary_plot.png"))
+        plt.close(fig)
+
         return self
 
     def evaluate(self, result_dir: Path) -> None:
@@ -338,10 +377,10 @@ class Ranker:
             .reset_index(drop=False)
         )
 
-        metrics_df.to_csv(result_dir.joinpath("metrics.csv"))
+        metrics_df.to_csv(result_dir.joinpath("ranker_metrics.csv"))
         for metric_name in ["precision", "recall", "map", "ndcg"]:
             fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
             sns.lineplot(metrics_df, x="k", y=metric_name, hue="model", ax=ax)
-            fig.tight_layout()
-            fig.savefig(result_dir.joinpath(f"{metric_name}.png"))
-            plt.close()
+            plt.tight_layout()
+            plt.savefig(result_dir.joinpath(f"ranker_{metric_name}.png"))
+            plt.close(fig)

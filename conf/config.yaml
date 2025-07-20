@@ -12,7 +12,7 @@ data:
   test_start_date: 2020-09-07
   test_end_date: 2020-09-07
   chunksize: 100000
-  num_customer: 1000
+  num_customer: 10000
 candidates:
   popular:
     topk: 30
@@ -113,3 +113,4 @@ model:
 exp:
   num_rec: 10
   ks: [1, 3, 5, 10]
+  summary_plot_num_sample: 10000

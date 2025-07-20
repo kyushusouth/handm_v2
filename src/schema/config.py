@@ -120,6 +120,7 @@ class Model(BaseModel):
 class Exp(BaseModel):
     num_rec: int
     ks: list[int]
+    summary_plot_num_sample: int
 
 
 class Config(BaseModel):

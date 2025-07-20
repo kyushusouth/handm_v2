@@ -6,8 +6,8 @@ import seaborn as sns
 
 from src.candidates_generator import CandidatesGenerator
 from src.dataset import Dataset
+from src.lgb_ranker import LGBRanker
 from src.metrics_calculator import MetricsCalculator
-from src.ranker import Ranker
 from src.schema.config import Config
 
 plt.rcParams["font.size"] = 18
@@ -24,13 +24,13 @@ def main():
     dataset = Dataset(cfg)
     metrics_calculator = MetricsCalculator(cfg)
     cand_generator = CandidatesGenerator(cfg)
-    ranker = Ranker(cfg, metrics_calculator)
+    ranker = LGBRanker(cfg, metrics_calculator)
 
     cand_generator.generate_candidates(dataset)
     cand_generator.evaluate_candidates(dataset, result_dir)
 
     ranker.preprocess(dataset, cand_generator.candidates_df)
-    ranker.train()
+    ranker.train(result_dir)
     ranker.evaluate(result_dir)
 
 
