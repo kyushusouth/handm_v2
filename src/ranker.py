@@ -316,7 +316,7 @@ class Ranker:
         coverage = self.metrics_calculator.coverage(
             set(all_pred_items), set(all_items_catalog)
         )
-        gini = self.metrics_calculator.gini_index(set(all_pred_items))
+        gini = self.metrics_calculator.gini_index(all_pred_items)
         dissimilarity = self.metrics_calculator.dissimilarity_score(pred_items)
         novelty = self.metrics_calculator.novelty(
             past_items.values(), pred_items.values()
