@@ -17,6 +17,7 @@ class Data(BaseModel):
     test_start_date: date
     test_end_date: date
     chunksize: int
+    num_customer: int
 
 
 class Popular(BaseModel):

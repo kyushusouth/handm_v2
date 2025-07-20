@@ -1,15 +1,23 @@
+import random
 from datetime import date
+from pathlib import Path
 
+import lightgbm as lgb
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 from sklearn.preprocessing import LabelEncoder
 
-from schema.config import Config
+from src.dataset import Dataset
+from src.metrics_calculator import MetricsCalculator
+from src.schema.config import Config
 
 
 class Ranker:
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, metrics_calculator: MetricsCalculator) -> None:
         self.cfg = cfg
+        self.metrics_calculator = metrics_calculator
 
     def create_ranking_features(
         self,
@@ -19,7 +27,6 @@ class Ranker:
         article_df: pd.DataFrame,
         ref_date: date,
         all_embeddings: dict[str, dict[str, np.ndarray]],
-        meta_features: pd.DataFrame,
         col_le: dict[str, LabelEncoder] | dict,
     ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
         trans_df["days_since_purchase"] = (ref_date - trans_df["t_dat"]).dt.days
@@ -93,12 +100,11 @@ class Ranker:
             )
             .merge(user_features, on="customer_id", how="left")
             .merge(item_features, on="article_id", how="left")
-            .merge(meta_features, on=["customer_id", "article_id"], how="left")
         )
 
         for emb_name, item_embeddings in all_embeddings.items():
             if not item_embeddings:
-                continue  # 埋め込みが空ならスキップ
+                continue
 
             embedding_dim = next(iter(item_embeddings.values())).shape[0]
             emb_df = pd.DataFrame(item_embeddings).T.reset_index()
@@ -134,3 +140,208 @@ class Ranker:
             df = df.drop(columns=user_vec_cols + item_vec_cols)
 
         return df, col_le
+
+    def preprocess(self, dataset: Dataset, candidates_df: pd.DataFrame):
+        train_trans_df = (
+            dataset.train_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
+            .drop_duplicates(["customer_id", "article_id"])
+            .copy()
+        )
+        val_trans_df = (
+            dataset.val_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
+            .drop_duplicates(["customer_id", "article_id"])
+            .copy()
+        )
+        test_trans_df = (
+            dataset.test_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
+            .drop_duplicates(["customer_id", "article_id"])
+            .copy()
+        )
+
+        train_trans_df.loc[:, "purchased"] = 1
+        val_trans_df.loc[:, "purchased"] = 1
+        test_trans_df.loc[:, "purchased"] = 1
+
+        train_trans_df = candidates_df.merge(
+            train_trans_df, on=["customer_id", "article_id"], how="left"
+        ).fillna(0)
+        val_trans_df = candidates_df.merge(
+            val_trans_df, on=["customer_id", "article_id"], how="left"
+        ).fillna(0)
+        test_trans_df = candidates_df.merge(
+            test_trans_df, on=["customer_id", "article_id"], how="left"
+        ).fillna(0)
+
+        train_trans_df = train_trans_df.merge(
+            train_trans_df.groupby("customer_id")
+            .agg(has_purchased_item=("purchased", "max"))
+            .query("has_purchased_item == 1")
+            .reset_index(drop=False)[["customer_id"]],
+            on=["customer_id"],
+            how="inner",
+        )
+        val_trans_df = val_trans_df.merge(
+            val_trans_df.groupby("customer_id")
+            .agg(has_purchased_item=("purchased", "max"))
+            .query("has_purchased_item == 1")
+            .reset_index(drop=False)[["customer_id"]],
+            on=["customer_id"],
+            how="inner",
+        )
+        test_trans_df = test_trans_df.merge(
+            test_trans_df.groupby("customer_id")
+            .agg(has_purchased_item=("purchased", "max"))
+            .query("has_purchased_item == 1")
+            .reset_index(drop=False)[["customer_id"]],
+            on=["customer_id"],
+            how="inner",
+        )
+
+        col_le = {}
+        train_trans_df, col_le = self.create_ranking_features(
+            train_trans_df,
+            dataset.past_trans_df,
+            dataset.customer_df,
+            dataset.article_df,
+            dataset.train_start_date,
+            {},
+            col_le,
+        )
+        val_trans_df, col_le = self.create_ranking_features(
+            val_trans_df,
+            dataset.past_trans_df,
+            dataset.customer_df,
+            dataset.article_df,
+            dataset.val_start_date,
+            {},
+            col_le,
+        )
+        test_trans_df, col_le = self.create_ranking_features(
+            test_trans_df,
+            dataset.past_trans_df,
+            dataset.customer_df,
+            dataset.article_df,
+            dataset.test_start_date,
+            {},
+            col_le,
+        )
+
+        print(
+            "\nFeature Engineering Complete.",
+            f"\nShape of the training data: {train_trans_df.shape}",
+            f"\nShape of the validation data: {val_trans_df.shape}",
+            f"\nShape of the test data: {test_trans_df.shape}",
+        )
+
+        self.train_trans_df = train_trans_df.sort_values("customer_id")
+        self.val_trans_df = val_trans_df.sort_values("customer_id")
+        self.test_trans_df = test_trans_df.sort_values("customer_id")
+
+    def train(self) -> "Ranker":
+        self.ranker = lgb.LGBMRanker(
+            objective=self.cfg.model.params.lgb.objective,
+            metric=self.cfg.model.params.lgb.eval_metric,
+            max_depth=self.cfg.model.params.lgb.max_depth,
+            learning_rate=self.cfg.model.params.lgb.learning_rate,
+            n_estimators=self.cfg.model.params.lgb.n_estimators,
+            importance_type=self.cfg.model.params.lgb.importance_type,
+            random_state=self.cfg.seed,
+        )
+        self.ranker.fit(
+            self.train_trans_df[
+                self.cfg.model.features.cat + self.cfg.model.features.num
+            ],
+            self.train_trans_df["purchased"],
+            group=self.train_trans_df.groupby("customer_id").size().values,
+            eval_set=[
+                (
+                    self.val_trans_df[
+                        self.cfg.model.features.cat + self.cfg.model.features.num
+                    ],
+                    self.val_trans_df["purchased"],
+                )
+            ],
+            eval_group=[
+                self.val_trans_df.groupby("customer_id").size().values,
+            ],
+            eval_metric=self.cfg.model.params.lgb.eval_metric,
+            eval_at=self.cfg.model.params.lgb.eval_at,
+            categorical_feature=self.cfg.model.features.cat,
+            callbacks=[
+                lgb.early_stopping(
+                    stopping_rounds=self.cfg.model.params.lgb.early_stopping_round
+                )
+            ],
+        )
+        return self
+
+    def evaluate(self, result_dir: Path) -> None:
+        metrics_df_rows = []
+        for _, group_df in self.test_trans_df.groupby("customer_id"):
+            y_pred = self.ranker.predict(
+                group_df[self.cfg.model.features.cat + self.cfg.model.features.num]
+            )
+            group_df["pred"] = y_pred
+            group_df = group_df.sort_values("pred", ascending=False)
+            true_items = group_df.loc[
+                group_df["purchased"] == 1, "article_id"
+            ].values.tolist()
+            pred_items = group_df.head(self.cfg.exp.num_rec)[
+                "article_id"
+            ].values.tolist()
+            pred_rand_items = random.sample(
+                group_df["article_id"].values.tolist(), self.cfg.exp.num_rec
+            )
+            for k in self.cfg.exp.ks:
+                pred_items_k = pred_items[:k]
+                pred_rand_items_k = pred_rand_items[:k]
+                metrics_df_rows.append(
+                    [
+                        "lightgbm",
+                        k,
+                        self.metrics_calculator.precision_at_k(
+                            true_items, pred_items_k
+                        ),
+                        self.metrics_calculator.recall_at_k(true_items, pred_items_k),
+                        self.metrics_calculator.ap_at_k(true_items, pred_items_k),
+                        self.metrics_calculator.ndcg_at_k(true_items, pred_items_k),
+                    ]
+                )
+                metrics_df_rows.append(
+                    [
+                        "rand",
+                        k,
+                        self.metrics_calculator.precision_at_k(
+                            true_items, pred_rand_items_k
+                        ),
+                        self.metrics_calculator.recall_at_k(
+                            true_items, pred_rand_items_k
+                        ),
+                        self.metrics_calculator.ap_at_k(true_items, pred_rand_items_k),
+                        self.metrics_calculator.ndcg_at_k(
+                            true_items, pred_rand_items_k
+                        ),
+                    ]
+                )
+        metrics_df = pd.DataFrame(
+            metrics_df_rows,
+            columns=["model", "k", "precision", "recall", "map", "ndcg"],
+        )
+        metrics_df = (
+            metrics_df.groupby(["model", "k"])
+            .agg(
+                precision=("precision", "mean"),
+                recall=("recall", "mean"),
+                map=("map", "mean"),
+                ndcg=("ndcg", "mean"),
+            )
+            .reset_index(drop=False)
+        )
+
+        metrics_df.to_csv(result_dir.joinpath("metrics.csv"))
+        for metric_name in ["precision", "recall", "map", "ndcg"]:
+            fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+            sns.lineplot(metrics_df, x="k", y=metric_name, hue="model", ax=ax)
+            fig.tight_layout()
+            fig.savefig(result_dir.joinpath(f"{metric_name}.png"))
+            plt.close()

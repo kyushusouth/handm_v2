@@ -1,8 +1,6 @@
 from itertools import combinations
-from pathlib import Path
 
 import gensim
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -10,7 +8,7 @@ from node2vec import Node2Vec
 from scipy.sparse import coo_matrix
 from sklearn.decomposition import TruncatedSVD
 
-from schema.config import Config
+from src.schema.config import Config
 
 
 class EmbeddingGenerator:
@@ -18,14 +16,7 @@ class EmbeddingGenerator:
         self.cfg = cfg
 
     def create_item2vec_embeddings(
-        self,
-        trans_df: pd.DataFrame,
-        vector_size: int,
-        window: int,
-        min_count: int,
-        workers: int,
-        sg: int,
-        seed: int,
+        self, trans_df: pd.DataFrame
     ) -> dict[str, np.ndarray]:
         print("Creating item2vec embeddings...")
         purchase_histories = (
@@ -33,17 +24,15 @@ class EmbeddingGenerator:
             .groupby("customer_id")["article_id"]
             .apply(list)
         )
-
         model = gensim.models.Word2Vec(
             sentences=purchase_histories,
-            vector_size=vector_size,
-            window=window,
-            min_count=min_count,
-            workers=workers,
-            sg=sg,
-            seed=seed,
+            vector_size=self.cfg.model.params.item2vec.vector_size,
+            window=self.cfg.model.params.item2vec.window,
+            min_count=self.cfg.model.params.item2vec.min_count,
+            workers=self.cfg.model.params.item2vec.workers,
+            sg=self.cfg.model.params.item2vec.sg,
+            seed=self.cfg.seed,
         )
-
         item_embeddings = {
             article_id: model.wv[article_id] for article_id in model.wv.index_to_key
         }
@@ -115,7 +104,6 @@ class EmbeddingGenerator:
             random_state=self.cfg.seed,
         )
         item_vectors = svd.fit_transform(cooc_matrix)
-
         item_embeddings = {idx2id[i]: item_vectors[i] for i in range(n_items)}
         return item_embeddings
 
@@ -142,44 +130,3 @@ class EmbeddingGenerator:
         item_ids = trans_df["article_id"].unique()
         item_embeddings = {aid: model.wv[aid] for aid in item_ids if aid in model.wv}
         return item_embeddings
-
-    def evaluate_candidate_sources(
-        self,
-        trans_df: pd.DataFrame,
-        candidate_sources: dict[str, dict[str, list[str]]],
-        result_dir: Path,
-    ):
-        """
-        複数の候補生成ロジックの結果をまとめて評価し、比較する
-        """
-        print("\n--- Evaluating Candidate Generation Recall ---")
-
-        ground_truth = (
-            trans_df.groupby("customer_id")["article_id"].apply(set).to_dict()
-        )
-        total_true_items = sum(len(s) for s in ground_truth.values())
-
-        recall_scores = {}
-        for source_name, candidates_dict in candidate_sources.items():
-            hits = 0
-            for cid, true_items in ground_truth.items():
-                pred_items = set(
-                    candidates_dict.get(cid, candidates_dict.get("all_users", []))
-                )
-                hits += len(true_items.intersection(pred_items))
-
-            recall = hits / total_true_items if total_true_items > 0 else 0
-            recall_scores[source_name] = recall
-            print(f"Recall for {source_name}: {recall:.4f}")
-
-        recall_series = pd.Series(recall_scores).sort_values(ascending=False)
-
-        fig, ax = plt.subplots(figsize=(10, 8))
-        recall_series.plot(kind="barh", ax=ax)
-        ax.set_title("Recall by Candidate Source")
-        ax.set_xlabel("Recall")
-        fig.tight_layout()
-        fig.savefig(result_dir.joinpath("candidate_recall.png"))
-        plt.close()
-
-        recall_series.to_csv(result_dir.joinpath("candidate_recall.csv"))

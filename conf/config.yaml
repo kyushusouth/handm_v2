@@ -11,25 +11,26 @@ data:
   val_end_date: 2020-09-06
   test_start_date: 2020-09-07
   test_end_date: 2020-09-07
-  chunksize: 10000
+  chunksize: 100000
+  num_customer: 1000
 candidates:
   popular:
-    topk: 20
+    topk: 30
   age_popular:
-    topk: 20
+    topk: 30
   most_freq_cat_popular:
-    topk: 20
+    topk: 30
   similar:
     min_df: 3
-    topk: 20
+    topk: 30
   item2vec:
-    topk: 20
+    topk: 30
   cooc:
-    topk: 20
+    topk: 30
   node2vec:
-    topk: 20
+    topk: 30
   transition:
-    topk: 20
+    topk: 30
   use:
     [
       "popular",
@@ -38,7 +39,7 @@ candidates:
       "most_freq_cat_popular",
       "similar",
       "same_product",
-      "transition",
+      # "transition",
       # "item2vec",
       # "cooc",
       # "node2vec",
@@ -60,17 +61,7 @@ model:
         "user_price_sum",
         "user_item_purchase_cnt",
         "age",
-        "embedding_affinity_score",
-        # "source_user_past",
-        # "source_similar",
-        # "source_same_product",
-        # "source_top_cat",
-        # "source_age",
-        # "source_popular",
-        # "source_item2vec",
-        # "source_cooc",
-        # "source_node2vec",
-        # "source_transition",
+        # "embedding_affinity_score",
       ]
     cat:
       [

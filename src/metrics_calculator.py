@@ -3,7 +3,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from schema.config import Config
+from src.schema.config import Config
 
 
 class MetricsCalculator:

@@ -1,12 +1,20 @@
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from schema.config import Config
+from src.dataset import Dataset
+from src.schema.config import Config
 
 
 class CandidatesGenerator:
+    cfg: Config
+    candidates_df: pd.DataFrame
+
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
 
@@ -251,3 +259,131 @@ class CandidatesGenerator:
             candidates[user_id] = candidate_aids[:topk]
 
         return candidates
+
+    def generate_candidates(self, dataset: Dataset):
+        candidates_popular = self.generate_popular_items(dataset.past_trans_df)
+        candidates_age_popular, customer_age_map = self.generate_age_popular_items(
+            dataset.past_trans_df, dataset.customer_df
+        )
+        candidates_user_past = self.generate_user_past_items(dataset.past_trans_df)
+        customer_top_cat, cat_popular_items = self.generate_most_freq_cat_popular_items(
+            dataset.past_trans_df, dataset.article_df
+        )
+        candidates_similar = self.generate_similar_items(dataset.article_df.copy())
+        candidates_same_product = self.generate_same_product_items(dataset.article_df)
+        candidates_transition = self.generate_transition_prob_candidates(
+            dataset.past_trans_df, candidates_user_past
+        )
+
+        candidate_sources = []
+        for cid in dataset.all_customers:
+            for aid in candidates_user_past.get(cid, []):
+                candidate_sources.append(
+                    {"customer_id": cid, "article_id": aid, "source": "user_past"}
+                )
+                for sim_aid in candidates_similar.get(aid, []):
+                    candidate_sources.append(
+                        {"customer_id": cid, "article_id": sim_aid, "source": "similar"}
+                    )
+                for same_aid in candidates_same_product.get(aid, []):
+                    candidate_sources.append(
+                        {
+                            "customer_id": cid,
+                            "article_id": same_aid,
+                            "source": "same_product",
+                        }
+                    )
+            if cid in customer_top_cat:
+                top_cat = customer_top_cat[cid]
+                for aid_top_cat in cat_popular_items.get(top_cat, []):
+                    candidate_sources.append(
+                        {
+                            "customer_id": cid,
+                            "article_id": aid_top_cat,
+                            "source": "top_cat",
+                        }
+                    )
+            if cid in customer_age_map:
+                age_bin = customer_age_map[cid]
+                for aid_age in candidates_age_popular.get(age_bin, []):
+                    candidate_sources.append(
+                        {"customer_id": cid, "article_id": aid_age, "source": "age"}
+                    )
+            for aid in candidates_popular:
+                candidate_sources.append(
+                    {"customer_id": cid, "article_id": aid, "source": "popular"}
+                )
+            for aid in candidates_transition:
+                candidate_sources.append(
+                    {"customer_id": cid, "article_id": aid, "source": "transition"}
+                )
+
+        self.candidates_df = pd.DataFrame(candidate_sources).drop_duplicates()
+
+    def evaluate_candidates(self, dataset: Dataset, result_dir: Path) -> None:
+        eval_data = {
+            "train": dataset.train_trans_df.groupby("customer_id")["article_id"]
+            .apply(set)
+            .to_dict(),
+            "val": dataset.val_trans_df.groupby("customer_id")["article_id"]
+            .apply(set)
+            .to_dict(),
+            "test": dataset.test_trans_df.groupby("customer_id")["article_id"]
+            .apply(set)
+            .to_dict(),
+        }
+
+        metrics = []
+        for kind, ground_truth in eval_data.items():
+            total_true_items = sum(len(s) for s in ground_truth.values())
+            for source_name in self.candidates_df["source"].unique():
+                source_candidates = self.candidates_df[
+                    self.candidates_df["source"] == source_name
+                ]
+                source_preds = (
+                    source_candidates.groupby("customer_id")["article_id"]
+                    .apply(set)
+                    .to_dict()
+                )
+                total_pred_items = sum(len(s) for s in source_preds.values())
+                hits = 0
+                for cid, true_items in ground_truth.items():
+                    pred_items = source_preds.get(cid, set())
+                    hits += len(true_items & pred_items)
+                metrics.append(
+                    {
+                        "kind": kind,
+                        "source": source_name,
+                        "num_candidates": total_pred_items,
+                        "precision": hits / total_pred_items,
+                        "recall": hits / total_true_items,
+                    }
+                )
+
+            all_preds = (
+                self.candidates_df.groupby("customer_id")["article_id"]
+                .apply(set)
+                .to_dict()
+            )
+            total_pred_items = sum(len(s) for s in all_preds.values())
+            all_hits = 0
+            for cid, true_items in ground_truth.items():
+                pred_items = all_preds.get(cid, set())
+                all_hits += len(true_items & pred_items)
+            metrics.append(
+                {
+                    "kind": kind,
+                    "source": "all",
+                    "num_candidates": total_pred_items,
+                    "precision": all_hits / total_pred_items,
+                    "recall": all_hits / total_true_items,
+                }
+            )
+
+        metrics_df = pd.DataFrame(metrics)
+        metrics_df.to_csv(result_dir.joinpath("candidates_metrics.csv"))
+
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        sns.barplot(metrics_df, x="source", y="recall", hue="kind", ax=ax)
+        fig.tight_layout()
+        fig.savefig(result_dir.joinpath("candidates_recall.png"))
