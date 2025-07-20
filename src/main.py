@@ -39,12 +39,10 @@ def main():
     cand_generator.evaluate_candidates(dataset, result_dir)
 
     lgb_ranker.preprocess(dataset, cand_generator.candidates_df, all_embeddings)
-    lgb_ranker.train(result_dir)
-    lgb_ranker.evaluate(result_dir)
+    lgb_ranker.train(result_dir).evaluate(result_dir, dataset)
 
     cat_ranker.preprocess(dataset, cand_generator.candidates_df, all_embeddings)
-    cat_ranker.train(result_dir)
-    cat_ranker.evaluate(result_dir)
+    cat_ranker.train(result_dir).evaluate(result_dir, dataset)
 
 
 if __name__ == "__main__":

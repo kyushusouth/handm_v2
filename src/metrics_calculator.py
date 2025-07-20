@@ -1,7 +1,8 @@
+from collections import Counter
+from itertools import combinations
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
 from src.schema.config import Config
 
@@ -9,28 +10,6 @@ from src.schema.config import Config
 class MetricsCalculator:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-
-    def calc(
-        self, eval_df: pd.DataFrame, true_items_col: str, pred_items_col: str
-    ) -> pd.DataFrame:
-        metrics_df = eval_df.apply(
-            lambda row: pd.Series(
-                {
-                    "precision": self.precision_at_k(
-                        row[true_items_col], row[pred_items_col]
-                    ),
-                    "recall": self.recall_at_k(
-                        row[true_items_col], row[pred_items_col]
-                    ),
-                    "f1": self.f1_at_k(row[true_items_col], row[pred_items_col]),
-                    "mrr": self.rr_at_k(row[true_items_col], row[pred_items_col]),
-                    "map": self.ap_at_k(row[true_items_col], row[pred_items_col]),
-                    "ndcg": self.ndcg_at_k(row[true_items_col], row[pred_items_col]),
-                }
-            ),
-            axis=1,
-        )
-        return metrics_df
 
     def precision_at_k(self, true_items: list[Any], pred_items: list[Any]) -> float:
         if len(pred_items) == 0:
@@ -89,3 +68,69 @@ class MetricsCalculator:
         if not dcg_max:
             return 0
         return self.dcg_at_k(user_relevances) / dcg_max
+
+    def coverage(
+        self,
+        all_pred_items: set[Any],
+        all_items_catalog: set[Any],
+    ) -> float:
+        return len(all_pred_items) / len(all_items_catalog)
+
+    def gini_index(self, all_pred_items: list[Any]) -> float:
+        counts = np.array(list(Counter(all_pred_items).values()))
+        sorted_counts = np.sort(counts)
+        cumulative_counts = np.cumsum(sorted_counts) / np.sum(sorted_counts)
+        cumulative_counts = np.insert(cumulative_counts, 0, 0)
+        area_under_curve = np.trapz(cumulative_counts, dx=1 / len(cumulative_counts))
+        return 1 - 2 * area_under_curve
+
+    def dissimilarity_score(self, pred_items: dict[str, list[Any]]) -> float:
+        dissimilarity_scores = []
+        for user1, user2 in combinations(pred_items.keys(), 2):
+            list1, list2 = (
+                set(pred_items.get(user1, [])),
+                set(pred_items.get(user2, [])),
+            )
+            if not list1 or not list2:
+                continue
+            intersection, union = (
+                len(list1.intersection(list2)),
+                len(list1.union(list2)),
+            )
+            dissimilarity_scores.append(1.0 - (intersection / union))
+        return np.mean(dissimilarity_scores).item() if dissimilarity_scores else 0.0
+
+    def novelty(self, past_items: list[Any], pred_items: list[Any]) -> float:
+        all_interactions = [item for sublist in past_items for item in sublist]
+        item_counts = Counter(all_interactions)
+        total_interactions = len(all_interactions)
+        item_popularity_prob = {
+            item: count / total_interactions for item, count in item_counts.items()
+        }
+        mean_novelty_scores = []
+        for pred_list in pred_items:
+            user_novelty = [
+                -np.log2(item_popularity_prob.get(item_id, 1e-9))
+                for item_id in pred_list
+            ]
+            if user_novelty:
+                mean_novelty_scores.append(np.mean(user_novelty))
+        return np.mean(mean_novelty_scores).item() if mean_novelty_scores else 0.0
+
+    def serendipity(
+        self,
+        past_items: dict[str, list[Any]],
+        true_items: dict[str, list[Any]],
+        pred_items: dict[str, list[Any]],
+    ) -> float:
+        serendipity_scores = []
+        for user_id, pred_list in pred_items.items():
+            past_set = set(past_items.get(user_id, []))
+            true_set = set(true_items.get(user_id, []))
+            if not pred_list or not true_set:
+                continue
+            serendipitous_count = sum(
+                1 for item in pred_list if item not in past_set and item in true_set
+            )
+            serendipity_scores.append(serendipitous_count / len(pred_list))
+        return np.mean(serendipity_scores).item() if serendipity_scores else 0.0
