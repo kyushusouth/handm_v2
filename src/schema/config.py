@@ -81,6 +81,15 @@ class ParamsLGBM(BaseModel):
     early_stopping_round: int
 
 
+class ParamsCatBoost(BaseModel):
+    loss_function: str
+    eval_metric: str
+    iterations: int
+    learning_rate: float
+    depth: int
+    early_stopping_round: int
+
+
 class ParamsItem2Vec(BaseModel):
     vector_size: int
     window: int
@@ -107,6 +116,7 @@ class ParamsNode2Vec(BaseModel):
 
 class Params(BaseModel):
     lgb: ParamsLGBM
+    cat: ParamsCatBoost
     item2vec: ParamsItem2Vec
     cooc: ParamsCooccurence
     node2vec: ParamsNode2Vec

@@ -2,7 +2,7 @@ import random
 from datetime import date
 from pathlib import Path
 
-import lightgbm as lgb
+import catboost as cat
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ from src.metrics_calculator import MetricsCalculator
 from src.schema.config import Config
 
 
-class LGBRanker:
+class CatRanker:
     def __init__(self, cfg: Config, metrics_calculator: MetricsCalculator) -> None:
         self.cfg = cfg
         self.metrics_calculator = metrics_calculator
@@ -243,68 +243,56 @@ class LGBRanker:
         self.val_trans_df = val_trans_df.sort_values("customer_id")
         self.test_trans_df = test_trans_df.sort_values("customer_id")
 
-    def train(self, result_dir: Path) -> "LGBRanker":
-        self.ranker = lgb.LGBMRanker(
-            objective=self.cfg.model.params.lgb.objective,
-            metric=self.cfg.model.params.lgb.eval_metric,
-            max_depth=self.cfg.model.params.lgb.max_depth,
-            learning_rate=self.cfg.model.params.lgb.learning_rate,
-            n_estimators=self.cfg.model.params.lgb.n_estimators,
-            importance_type=self.cfg.model.params.lgb.importance_type,
-            random_state=self.cfg.seed,
-            verbosity=-1,
-        )
-        self.ranker.fit(
+    def train(self, result_dir: Path) -> "CatRanker":
+        train_pool = cat.Pool(
             self.train_trans_df[
                 self.cfg.model.features.cat + self.cfg.model.features.num
             ],
             self.train_trans_df["purchased"],
-            group=self.train_trans_df.groupby("customer_id").size().values,
-            eval_set=[
-                (
-                    self.val_trans_df[
-                        self.cfg.model.features.cat + self.cfg.model.features.num
-                    ],
-                    self.val_trans_df["purchased"],
-                )
+            group_id=self.train_trans_df["customer_id"].values,
+            cat_features=range(len(self.cfg.model.features.cat)),
+        )
+        val_pool = cat.Pool(
+            self.val_trans_df[
+                self.cfg.model.features.cat + self.cfg.model.features.num
             ],
-            eval_group=[
-                self.val_trans_df.groupby("customer_id").size().values,
-            ],
-            eval_metric=self.cfg.model.params.lgb.eval_metric,
-            eval_at=self.cfg.model.params.lgb.eval_at,
-            categorical_feature=self.cfg.model.features.cat,
-            callbacks=[
-                lgb.early_stopping(
-                    stopping_rounds=self.cfg.model.params.lgb.early_stopping_round
-                )
-            ],
+            self.val_trans_df["purchased"],
+            group_id=self.val_trans_df["customer_id"].values,
+            cat_features=range(len(self.cfg.model.features.cat)),
+        )
+        self.ranker = cat.CatBoostRanker(
+            iterations=self.cfg.model.params.cat.iterations,
+            learning_rate=self.cfg.model.params.cat.learning_rate,
+            depth=self.cfg.model.params.cat.depth,
+            loss_function=self.cfg.model.params.cat.loss_function,
+            eval_metric=self.cfg.model.params.cat.eval_metric,
+            random_seed=self.cfg.seed,
+            allow_writing_files=False,
+        )
+        self.ranker.fit(
+            train_pool,
+            eval_set=val_pool,
+            early_stopping_rounds=self.cfg.model.params.cat.early_stopping_round,
         )
 
+        metric_values = self.ranker.get_evals_result()["validation"][
+            f"{self.cfg.model.params.cat.eval_metric};type=Base"
+        ]
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        metric_colormaps = {"ndcg": "Blues"}
-        eval_at_list = self.cfg.model.params.lgb.eval_at
-        num_k_values = len(eval_at_list)
-        for metric_name, base_cmap_name in metric_colormaps.items():
-            cmap = plt.get_cmap(base_cmap_name)
-            colors = [cmap(i) for i in np.linspace(0.3, 0.9, num_k_values)]
-            for i, k in enumerate(eval_at_list):
-                label = f"{metric_name}@{k}"
-                metric_values = self.ranker.evals_result_["valid_0"][label]
-                ax.plot(metric_values, color=colors[i], label=label)
+        ax.plot(metric_values)
         ax.set_xlabel("Iterations")
         ax.set_ylabel("Score")
-        ax.legend(title="Metrics", bbox_to_anchor=(1, 1), loc="upper left")
         plt.tight_layout()
-        plt.savefig(result_dir.joinpath("lgb_ranker_learning_curve.png"))
+        plt.savefig(result_dir.joinpath("cat_ranker_learning_curve.png"))
         plt.close(fig)
 
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        lgb.plot_importance(
-            self.ranker, ax=ax, max_num_features=20, importance_type="gain"
+        feat_imp_df = self.ranker.get_feature_importance(
+            train_pool, type="PredictionValuesChange", prettified=True
         )
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        sns.barplot(feat_imp_df, x="Importances", y="Feature Id")
         plt.tight_layout()
-        plt.savefig(result_dir.joinpath("lgb_ranker_feature_importance.png"))
+        plt.savefig(result_dir.joinpath("cat_ranker_feature_importance.png"))
         plt.close(fig)
 
         explainer = shap.TreeExplainer(self.ranker)
@@ -315,12 +303,12 @@ class LGBRanker:
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
         shap.summary_plot(shap_values, shap_samples, plot_type="bar", show=False)
         plt.tight_layout()
-        plt.savefig(result_dir.joinpath("lgb_ranker_shap_summary_plot.png"))
+        plt.savefig(result_dir.joinpath("cat_ranker_shap_summary_plot_bar.png"))
         plt.close(fig)
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
         shap.summary_plot(shap_values, shap_samples, plot_type="dot", show=False)
         plt.tight_layout()
-        plt.savefig(result_dir.joinpath("lgb_ranker_shap_summary_plot_dot.png"))
+        plt.savefig(result_dir.joinpath("cat_ranker_shap_summary_plot_dot.png"))
         plt.close(fig)
 
         return self
@@ -347,7 +335,7 @@ class LGBRanker:
                 pred_rand_items_k = pred_rand_items[:k]
                 metrics_df_rows.append(
                     [
-                        "lightgbm",
+                        "catboost",
                         k,
                         self.metrics_calculator.precision_at_k(
                             true_items, pred_items_k
@@ -388,10 +376,10 @@ class LGBRanker:
             .reset_index(drop=False)
         )
 
-        metrics_df.to_csv(result_dir.joinpath("lgb_ranker_metrics.csv"))
+        metrics_df.to_csv(result_dir.joinpath("cat_ranker_metrics.csv"))
         for metric_name in ["precision", "recall", "map", "ndcg"]:
             fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
             sns.lineplot(metrics_df, x="k", y=metric_name, hue="model", ax=ax)
             plt.tight_layout()
-            plt.savefig(result_dir.joinpath(f"lgb_ranker_{metric_name}.png"))
+            plt.savefig(result_dir.joinpath(f"cat_ranker_{metric_name}.png"))
             plt.close(fig)

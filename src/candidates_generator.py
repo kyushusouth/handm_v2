@@ -215,13 +215,13 @@ class CandidatesGenerator:
         return candidates
 
     def generate_embedding_based_candidates(
-        self,
-        past_trans_df: pd.DataFrame,
-        item_embeddings: dict[str, np.ndarray],
-        topk: int,
+        self, past_trans_df: pd.DataFrame, embeddings: dict[str, np.ndarray]
     ) -> dict[str, list[str]]:
+        if "item2vec" not in self.cfg.candidates.use:
+            return {}
+
         print("Generating embedding candidates...")
-        emb_df = pd.DataFrame(item_embeddings).T.reset_index()
+        emb_df = pd.DataFrame(embeddings).T.reset_index()
         emb_df.columns = ["article_id"] + [
             f"emb_{i}" for i in range(emb_df.shape[1] - 1)
         ]
@@ -249,18 +249,22 @@ class CandidatesGenerator:
         user_past_items = past_trans_df.groupby("customer_id")["article_id"].apply(set)
 
         for i, user_id in enumerate(user_profile_df.index):
-            top_indices = np.argsort(similarity_matrix[i, :])[-topk * 2 :][::-1]
+            top_indices = np.argsort(similarity_matrix[i, :])[
+                -self.cfg.candidates.item2vec.topk * 2 :
+            ][::-1]
             candidate_aids = item_ids[top_indices]
             if user_id in user_past_items:
                 purchased_set = user_past_items[user_id]
                 candidate_aids = [
                     aid for aid in candidate_aids if aid not in purchased_set
                 ]
-            candidates[user_id] = candidate_aids[:topk]
+            candidates[user_id] = candidate_aids[: self.cfg.candidates.item2vec.topk]
 
         return candidates
 
-    def generate_candidates(self, dataset: Dataset):
+    def generate_candidates(
+        self, dataset: Dataset, all_embeddings: dict[str, dict[str, np.ndarray]]
+    ) -> None:
         candidates_popular = self.generate_popular_items(dataset.past_trans_df)
         candidates_age_popular, customer_age_map = self.generate_age_popular_items(
             dataset.past_trans_df, dataset.customer_df
@@ -274,6 +278,12 @@ class CandidatesGenerator:
         candidates_transition = self.generate_transition_prob_candidates(
             dataset.past_trans_df, candidates_user_past
         )
+        if "item2vec" in all_embeddings:
+            candidates_item2vec = self.generate_embedding_based_candidates(
+                dataset.past_trans_df, all_embeddings["item2vec"]
+            )
+        else:
+            candidates_item2vec = {}
 
         candidate_sources = []
         for cid in dataset.all_customers:
@@ -316,6 +326,10 @@ class CandidatesGenerator:
             for aid in candidates_transition:
                 candidate_sources.append(
                     {"customer_id": cid, "article_id": aid, "source": "transition"}
+                )
+            for aid in candidates_item2vec:
+                candidate_sources.append(
+                    {"customer_id": cid, "article_id": aid, "source": "item2vec"}
                 )
 
         self.candidates_df = pd.DataFrame(candidate_sources).drop_duplicates()
