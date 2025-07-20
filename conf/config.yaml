@@ -12,7 +12,7 @@ data:
   test_start_date: 2020-09-07
   test_end_date: 2020-09-07
   chunksize: 100000
-  num_customer: 10000
+  num_customer: 20000
 candidates:
   popular:
     topk: 50

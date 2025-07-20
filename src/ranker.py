@@ -10,7 +10,7 @@ from sklearn.preprocessing import LabelEncoder
 
 from src.dataset import Dataset
 from src.metrics_calculator import MetricsCalculator
-from src.reranker_item2vec import MMRRerankerItemEmbeddingSimilarity
+from src.reranker_fairness import FairReranker
 from src.schema.config import Config
 
 
@@ -19,7 +19,7 @@ class Ranker:
         self,
         cfg: Config,
         metrics_calculator: MetricsCalculator,
-        reranker: MMRRerankerItemEmbeddingSimilarity,
+        reranker: FairReranker,
     ) -> None:
         self.cfg = cfg
         self.metrics_calculator = metrics_calculator
@@ -251,6 +251,7 @@ class Ranker:
     def evaluate(self, result_dir: Path, dataset: Dataset) -> None:
         metrics_df_rows = []
         rec_results = []
+        betas = np.arange(0.05, 1, 0.05)
         for customer_id, group_df in self.test_trans_df.groupby("customer_id"):
             y_pred = self.ranker.predict(
                 group_df[self.cfg.model.features.cat + self.cfg.model.features.num]
@@ -266,62 +267,66 @@ class Ranker:
                 "article_id"
             ].values.tolist()
 
-            pred_items_mmr_item2vec_all = {}
-            for w in range(0, 101, 10):
-                group_df = self.reranker.rerank_dataframe(group_df, w, f"mmr_score_{w}")
-                group_df = group_df.sort_values(f"mmr_score_{w}", ascending=False)
-                pred_items_mmr_item2vec = group_df.head(self.cfg.exp.num_rec)[
-                    "article_id"
-                ].values.tolist()
-                pred_items_mmr_item2vec_all[f"mmr_score_{w}"] = pred_items_mmr_item2vec
-
-            rec_results.append(
-                {
-                    "customer_id": customer_id,
-                    "past_items": dataset.past_trans_df.query(
-                        "customer_id == @customer_id"
-                    )["article_id"].tolist(),
-                    "true_items": true_items,
-                    "pred_items": pred_items,
-                }.update(
-                    {
-                        col_name: items
-                        for col_name, items in pred_items_mmr_item2vec_all.items()
-                    }
+            pred_items_rarank_list = []
+            for beta in betas:
+                pred_items_rerank = self.reranker.rerank(
+                    group_df.copy(),
+                    "interpolation",
+                    self.cfg.exp.num_rec,
+                    beta=beta,
                 )
+                pred_items_rarank_list.append([beta, pred_items_rerank])
+
+            rec_result = {
+                "customer_id": customer_id,
+                "past_items": dataset.past_trans_df.query(
+                    "customer_id == @customer_id"
+                )["article_id"].tolist(),
+                "true_items": true_items,
+                "pred_items": pred_items,
+            }
+            rec_result.update(
+                {f"pred_items:{data[0]}": data[1] for data in pred_items_rarank_list}
             )
+            rec_results.append(rec_result)
+
             for k in self.cfg.exp.ks:
-                pred_items_k = pred_items[:k]
                 metrics_df_rows.append(
                     [
                         self.__class__.__name__,
+                        0,
                         k,
                         self.metrics_calculator.precision_at_k(
-                            true_items, pred_items_k
+                            true_items, pred_items[:k]
                         ),
-                        self.metrics_calculator.recall_at_k(true_items, pred_items_k),
-                        self.metrics_calculator.ap_at_k(true_items, pred_items_k),
-                        self.metrics_calculator.ndcg_at_k(true_items, pred_items_k),
+                        self.metrics_calculator.recall_at_k(true_items, pred_items[:k]),
+                        self.metrics_calculator.ap_at_k(true_items, pred_items[:k]),
+                        self.metrics_calculator.ndcg_at_k(true_items, pred_items[:k]),
                     ]
                 )
-                for col_name, items in pred_items_mmr_item2vec_all.items():
+                for data in pred_items_rarank_list:
                     metrics_df_rows.append(
                         [
-                            f"{self.__class__.__name__}_{col_name}",
+                            self.__class__.__name__,
+                            data[0],
                             k,
-                            self.metrics_calculator.precision_at_k(true_items, items),
-                            self.metrics_calculator.recall_at_k(true_items, items),
-                            self.metrics_calculator.ap_at_k(true_items, items),
-                            self.metrics_calculator.ndcg_at_k(true_items, items),
+                            self.metrics_calculator.precision_at_k(
+                                true_items, data[1][:k]
+                            ),
+                            self.metrics_calculator.recall_at_k(
+                                true_items, data[1][:k]
+                            ),
+                            self.metrics_calculator.ap_at_k(true_items, data[1][:k]),
+                            self.metrics_calculator.ndcg_at_k(true_items, data[1][:k]),
                         ]
                     )
 
         metrics_df = pd.DataFrame(
             metrics_df_rows,
-            columns=["model", "k", "precision", "recall", "map", "ndcg"],
+            columns=["model", "beta", "k", "precision", "recall", "map", "ndcg"],
         )
         metrics_df = (
-            metrics_df.groupby(["model", "k"])
+            metrics_df.groupby(["model", "beta", "k"])
             .agg(
                 precision=("precision", "mean"),
                 recall=("recall", "mean"),
@@ -332,86 +337,74 @@ class Ranker:
         )
         metrics_df.to_csv(result_dir.joinpath(f"{self.__class__.__name__}_metrics.csv"))
 
-        metrics_df_mmr = metrics_df.query("model != @self.__class__.__name__")
-        metrics_df_mmr["w"] = (
-            metrics_df_mmr["model"]
-            .str.replace(f"{self.__class__.__name__}_mmr_score_", "")
-            .astype(int)
-        )
+        for metric_name in ["precision", "recall", "map", "ndcg"]:
+            fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+            sns.lineplot(metrics_df, x="beta", y=metric_name, hue="k", ax=ax)
+            fig.tight_layout()
+            fig.savefig(
+                result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
+            )
 
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        sns.lineplot(metrics_df_mmr, x="w", y="ndcg", ax=ax)
-        sns.lineplot(metrics_df_mmr, x="w", y="map", ax=ax)
-        sns.lineplot(metrics_df_mmr, x="w", y="recall", ax=ax)
-        fig.tight_layout()
-        fig.savefig(result_dir.joinpath(f"{self.__class__.__name__}_relation.png"))
+        rec_results_df = pd.DataFrame(rec_results).set_index("customer_id")
+        past_items = rec_results_df["past_items"].to_dict()
+        true_items = rec_results_df["true_items"].to_dict()
+        all_items_catalog = dataset.past_trans_df["article_id"].unique()
+        sub_metrics_list = []
+        for i, pred_items_col in enumerate(
+            ["pred_items"] + [f"pred_items:{beta}" for beta in betas]
+        ):
+            pred_items = rec_results_df[pred_items_col].to_dict()
+            all_pred_items = [
+                item for sublist in pred_items.values() for item in sublist
+            ]
+            coverage = self.metrics_calculator.coverage(
+                set(all_pred_items), set(all_items_catalog)
+            )
+            gini = self.metrics_calculator.gini_index(all_pred_items)
+            dissimilarity = self.metrics_calculator.dissimilarity_score(pred_items)
+            novelty = self.metrics_calculator.novelty(
+                past_items.values(), pred_items.values()
+            )
+            serendipity = self.metrics_calculator.serendipity(
+                past_items, true_items, pred_items
+            )
+            if pred_items_col == "pred_items":
+                sub_metrics_list.append(
+                    {
+                        "beta": 0,
+                        "coverage": coverage,
+                        "gini": gini,
+                        "dissimilarity": dissimilarity,
+                        "novelty": novelty,
+                        "serendipity": serendipity,
+                    }
+                )
+            else:
+                sub_metrics_list.append(
+                    {
+                        "beta": betas[i - 1],
+                        "coverage": coverage,
+                        "gini": gini,
+                        "dissimilarity": dissimilarity,
+                        "novelty": novelty,
+                        "serendipity": serendipity,
+                    }
+                )
+        sub_metrics_df = pd.DataFrame(sub_metrics_list)
 
-        # for metric_name in ["precision", "recall", "map", "ndcg"]:
-        #     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        #     sns.lineplot(metrics_df, x="k", y=metric_name, hue="model", ax=ax)
-        #     plt.tight_layout()
-        #     plt.savefig(
-        #         result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
-        #     )
-        #     plt.close(fig)
-
-        # rec_results_df = pd.DataFrame(rec_results).set_index("customer_id")
-        # past_items = rec_results_df["past_items"].to_dict()
-        # true_items = rec_results_df["true_items"].to_dict()
-        # pred_items = rec_results_df["pred_items"].to_dict()
-        # pred_items_mmr_item2vec = rec_results_df["pred_items_mmr_item2vec"].to_dict()
-        # all_pred_items = [item for sublist in pred_items.values() for item in sublist]
-        # all_pred_items_mmr_item2vec = [
-        #     item for sublist in pred_items_mmr_item2vec.values() for item in sublist
-        # ]
-        # all_items_catalog = dataset.past_trans_df["article_id"].unique()
-
-        # coverage = self.metrics_calculator.coverage(
-        #     set(all_pred_items), set(all_items_catalog)
-        # )
-        # coverage_mmr_item2vec = self.metrics_calculator.coverage(
-        #     set(all_pred_items_mmr_item2vec), set(all_items_catalog)
-        # )
-        # gini = self.metrics_calculator.gini_index(all_pred_items)
-        # gini_mmr_item2vec = self.metrics_calculator.gini_index(
-        #     all_pred_items_mmr_item2vec
-        # )
-        # dissimilarity = self.metrics_calculator.dissimilarity_score(pred_items)
-        # dissimilarity_mmr_item2vec = self.metrics_calculator.dissimilarity_score(
-        #     pred_items_mmr_item2vec
-        # )
-        # novelty = self.metrics_calculator.novelty(
-        #     past_items.values(), pred_items.values()
-        # )
-        # novelty_mmr_item2vec = self.metrics_calculator.novelty(
-        #     past_items.values(), pred_items_mmr_item2vec.values()
-        # )
-        # serendipity = self.metrics_calculator.serendipity(
-        #     past_items, true_items, pred_items
-        # )
-        # serendipity_mmr_item2vec = self.metrics_calculator.serendipity(
-        #     past_items, true_items, pred_items_mmr_item2vec
-        # )
-        # pd.DataFrame(
-        #     [
-        #         {
-        #             "model": self.__class__.__name__,
-        #             "coverage": coverage,
-        #             "gini": gini,
-        #             "dissimilarity": dissimilarity,
-        #             "novelty": novelty,
-        #             "serendipity": serendipity,
-        #         },
-        #         {
-        #             "model": f"{self.__class__.__name__}_mmr_item2vec",
-        #             "coverage": coverage_mmr_item2vec,
-        #             "gini": gini_mmr_item2vec,
-        #             "dissimilarity": dissimilarity_mmr_item2vec,
-        #             "novelty": novelty_mmr_item2vec,
-        #             "serendipity": serendipity_mmr_item2vec,
-        #         },
-        #     ]
-        # ).to_csv(result_dir.joinpath(f"{self.__class__.__name__}_sub_metrics.csv"))
+        for metric_name in [
+            "coverage",
+            "gini",
+            "dissimilarity",
+            "novelty",
+            "serendipity",
+        ]:
+            fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+            sns.lineplot(sub_metrics_df, x="beta", y=metric_name, ax=ax)
+            fig.tight_layout()
+            fig.savefig(
+                result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
+            )
 
         # counts = list(Counter(all_pred_items).values())
         # counts_mmr_item2vec = list(Counter(all_pred_items_mmr_item2vec).values())
