@@ -10,6 +10,7 @@ from src.dataset import Dataset
 from src.embedding_generator import EmbeddingGenerator
 from src.lgb_ranker import LGBRanker
 from src.metrics_calculator import MetricsCalculator
+from src.reranker_item2vec import MMRRerankerItemEmbeddingSimilarity
 from src.schema.config import Config
 
 plt.rcParams["font.size"] = 18
@@ -24,16 +25,19 @@ def main():
     result_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = Dataset(cfg)
-    metrics_calculator = MetricsCalculator(cfg)
-    cand_generator = CandidatesGenerator(cfg)
-    emb_generator = EmbeddingGenerator(cfg)
-    lgb_ranker = LGBRanker(cfg, metrics_calculator)
-    cat_ranker = CatRanker(cfg, metrics_calculator)
 
+    emb_generator = EmbeddingGenerator(cfg)
     all_embeddings = {}
     all_embeddings["item2vec"] = emb_generator.create_item2vec_embeddings(
         dataset.past_trans_df
     )
+
+    cand_generator = CandidatesGenerator(cfg)
+    metrics_calculator = MetricsCalculator(cfg)
+    reranker = MMRRerankerItemEmbeddingSimilarity(cfg, all_embeddings["item2vec"])
+
+    lgb_ranker = LGBRanker(cfg, metrics_calculator, reranker)
+    cat_ranker = CatRanker(cfg, metrics_calculator, reranker)
 
     cand_generator.generate_candidates(dataset, all_embeddings)
     cand_generator.evaluate_candidates(dataset, result_dir)

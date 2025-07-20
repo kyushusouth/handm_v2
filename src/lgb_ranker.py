@@ -7,12 +7,18 @@ import shap
 
 from src.metrics_calculator import MetricsCalculator
 from src.ranker import Ranker
+from src.reranker_item2vec import MMRRerankerItemEmbeddingSimilarity
 from src.schema.config import Config
 
 
 class LGBRanker(Ranker):
-    def __init__(self, cfg: Config, metrics_calculator: MetricsCalculator) -> None:
-        super().__init__(cfg, metrics_calculator)
+    def __init__(
+        self,
+        cfg: Config,
+        metrics_calculator: MetricsCalculator,
+        reranker: MMRRerankerItemEmbeddingSimilarity,
+    ) -> None:
+        super().__init__(cfg, metrics_calculator, reranker)
 
     def train(self, result_dir: Path) -> "LGBRanker":
         self.ranker = lgb.LGBMRanker(

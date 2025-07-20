@@ -127,6 +127,14 @@ class Model(BaseModel):
     params: Params
 
 
+class MMRRerankerItem2Vec(BaseModel):
+    w: float
+
+
+class Reranker(BaseModel):
+    mmr_item2vec: MMRRerankerItem2Vec
+
+
 class Exp(BaseModel):
     num_rec: int
     ks: list[int]
@@ -138,6 +146,7 @@ class Config(BaseModel):
     data: Data
     candidates: Candidates
     model: Model
+    reranker: Reranker
     exp: Exp
 
     @classmethod

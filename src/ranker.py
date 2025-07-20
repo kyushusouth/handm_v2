@@ -10,13 +10,20 @@ from sklearn.preprocessing import LabelEncoder
 
 from src.dataset import Dataset
 from src.metrics_calculator import MetricsCalculator
+from src.reranker_item2vec import MMRRerankerItemEmbeddingSimilarity
 from src.schema.config import Config
 
 
 class Ranker:
-    def __init__(self, cfg: Config, metrics_calculator: MetricsCalculator) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        metrics_calculator: MetricsCalculator,
+        reranker: MMRRerankerItemEmbeddingSimilarity,
+    ) -> None:
         self.cfg = cfg
         self.metrics_calculator = metrics_calculator
+        self.reranker = reranker
 
     def create_ranking_features(
         self,
@@ -249,13 +256,25 @@ class Ranker:
                 group_df[self.cfg.model.features.cat + self.cfg.model.features.num]
             )
             group_df["pred"] = y_pred
-            group_df = group_df.sort_values("pred", ascending=False)
+
             true_items = group_df.loc[
                 group_df["purchased"] == 1, "article_id"
             ].values.tolist()
+
+            group_df = group_df.sort_values("pred", ascending=False)
             pred_items = group_df.head(self.cfg.exp.num_rec)[
                 "article_id"
             ].values.tolist()
+
+            pred_items_mmr_item2vec_all = {}
+            for w in range(0, 101, 10):
+                group_df = self.reranker.rerank_dataframe(group_df, w, f"mmr_score_{w}")
+                group_df = group_df.sort_values(f"mmr_score_{w}", ascending=False)
+                pred_items_mmr_item2vec = group_df.head(self.cfg.exp.num_rec)[
+                    "article_id"
+                ].values.tolist()
+                pred_items_mmr_item2vec_all[f"mmr_score_{w}"] = pred_items_mmr_item2vec
+
             rec_results.append(
                 {
                     "customer_id": customer_id,
@@ -264,7 +283,12 @@ class Ranker:
                     )["article_id"].tolist(),
                     "true_items": true_items,
                     "pred_items": pred_items,
-                }
+                }.update(
+                    {
+                        col_name: items
+                        for col_name, items in pred_items_mmr_item2vec_all.items()
+                    }
+                )
             )
             for k in self.cfg.exp.ks:
                 pred_items_k = pred_items[:k]
@@ -280,6 +304,17 @@ class Ranker:
                         self.metrics_calculator.ndcg_at_k(true_items, pred_items_k),
                     ]
                 )
+                for col_name, items in pred_items_mmr_item2vec_all.items():
+                    metrics_df_rows.append(
+                        [
+                            f"{self.__class__.__name__}_{col_name}",
+                            k,
+                            self.metrics_calculator.precision_at_k(true_items, items),
+                            self.metrics_calculator.recall_at_k(true_items, items),
+                            self.metrics_calculator.ap_at_k(true_items, items),
+                            self.metrics_calculator.ndcg_at_k(true_items, items),
+                        ]
+                    )
 
         metrics_df = pd.DataFrame(
             metrics_df_rows,
@@ -295,71 +330,137 @@ class Ranker:
             )
             .reset_index(drop=False)
         )
-
         metrics_df.to_csv(result_dir.joinpath(f"{self.__class__.__name__}_metrics.csv"))
-        for metric_name in ["precision", "recall", "map", "ndcg"]:
-            fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-            sns.lineplot(metrics_df, x="k", y=metric_name, hue="model", ax=ax)
-            plt.tight_layout()
-            plt.savefig(
-                result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
-            )
-            plt.close(fig)
 
-        rec_results_df = pd.DataFrame(rec_results).set_index("customer_id")
-        past_items = rec_results_df["past_items"].to_dict()
-        true_items = rec_results_df["true_items"].to_dict()
-        pred_items = rec_results_df["pred_items"].to_dict()
-        all_pred_items = [item for sublist in pred_items.values() for item in sublist]
-        all_items_catalog = dataset.past_trans_df["article_id"].unique()
+        metrics_df_mmr = metrics_df.query("model != @self.__class__.__name__")
+        metrics_df_mmr["w"] = (
+            metrics_df_mmr["model"]
+            .str.replace(f"{self.__class__.__name__}_mmr_score_", "")
+            .astype(int)
+        )
 
-        coverage = self.metrics_calculator.coverage(
-            set(all_pred_items), set(all_items_catalog)
-        )
-        gini = self.metrics_calculator.gini_index(all_pred_items)
-        dissimilarity = self.metrics_calculator.dissimilarity_score(pred_items)
-        novelty = self.metrics_calculator.novelty(
-            past_items.values(), pred_items.values()
-        )
-        serendipity = self.metrics_calculator.serendipity(
-            past_items, true_items, pred_items
-        )
-        pd.DataFrame(
-            [
-                {
-                    "coverage": coverage,
-                    "gini": gini,
-                    "dissimilarity": dissimilarity,
-                    "novelty": novelty,
-                    "serendipity": serendipity,
-                }
-            ]
-        ).to_csv(result_dir.joinpath(f"{self.__class__.__name__}_sub_metrics.csv"))
-
-        counts = list(Counter(all_pred_items).values())
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        ax.hist(counts, bins=50, color="skyblue", edgecolor="black", alpha=0.8)
-        ax.set_title("Histogram of Recommendation Counts per Item", fontsize=16)
-        ax.set_xlabel("Number of Times an Item was Recommended", fontsize=12)
-        ax.set_ylabel("Number of Items (Frequency)", fontsize=12)
+        sns.lineplot(metrics_df_mmr, x="w", y="ndcg", ax=ax)
+        sns.lineplot(metrics_df_mmr, x="w", y="map", ax=ax)
+        sns.lineplot(metrics_df_mmr, x="w", y="recall", ax=ax)
         fig.tight_layout()
-        fig.savefig(result_dir.joinpath(f"{self.__class__.__name__}_rec_counts.png"))
-        plt.close(fig)
+        fig.savefig(result_dir.joinpath(f"{self.__class__.__name__}_relation.png"))
 
-        counts = np.array(list(Counter(all_pred_items).values()))
-        sorted_counts = np.sort(counts)
-        cumulative_counts = np.cumsum(sorted_counts) / np.sum(sorted_counts)
-        cumulative_counts = np.insert(cumulative_counts, 0, 0)
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        ax.plot(
-            np.linspace(0, 1, len(cumulative_counts)),
-            cumulative_counts,
-            label="Lorenz Curve",
-        )
-        ax.plot([0, 1], [0, 1], linestyle="--", label="Line of Perfect Equality")
-        ax.set_xlabel("Cumulative Share of Items")
-        ax.set_ylabel("Cumulative Share of Recommnedations")
-        fig.legend()
-        fig.tight_layout()
-        fig.savefig(result_dir.joinpath(f"{self.__class__.__name__}_lorenz_curve.png"))
-        plt.close(fig)
+        # for metric_name in ["precision", "recall", "map", "ndcg"]:
+        #     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        #     sns.lineplot(metrics_df, x="k", y=metric_name, hue="model", ax=ax)
+        #     plt.tight_layout()
+        #     plt.savefig(
+        #         result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
+        #     )
+        #     plt.close(fig)
+
+        # rec_results_df = pd.DataFrame(rec_results).set_index("customer_id")
+        # past_items = rec_results_df["past_items"].to_dict()
+        # true_items = rec_results_df["true_items"].to_dict()
+        # pred_items = rec_results_df["pred_items"].to_dict()
+        # pred_items_mmr_item2vec = rec_results_df["pred_items_mmr_item2vec"].to_dict()
+        # all_pred_items = [item for sublist in pred_items.values() for item in sublist]
+        # all_pred_items_mmr_item2vec = [
+        #     item for sublist in pred_items_mmr_item2vec.values() for item in sublist
+        # ]
+        # all_items_catalog = dataset.past_trans_df["article_id"].unique()
+
+        # coverage = self.metrics_calculator.coverage(
+        #     set(all_pred_items), set(all_items_catalog)
+        # )
+        # coverage_mmr_item2vec = self.metrics_calculator.coverage(
+        #     set(all_pred_items_mmr_item2vec), set(all_items_catalog)
+        # )
+        # gini = self.metrics_calculator.gini_index(all_pred_items)
+        # gini_mmr_item2vec = self.metrics_calculator.gini_index(
+        #     all_pred_items_mmr_item2vec
+        # )
+        # dissimilarity = self.metrics_calculator.dissimilarity_score(pred_items)
+        # dissimilarity_mmr_item2vec = self.metrics_calculator.dissimilarity_score(
+        #     pred_items_mmr_item2vec
+        # )
+        # novelty = self.metrics_calculator.novelty(
+        #     past_items.values(), pred_items.values()
+        # )
+        # novelty_mmr_item2vec = self.metrics_calculator.novelty(
+        #     past_items.values(), pred_items_mmr_item2vec.values()
+        # )
+        # serendipity = self.metrics_calculator.serendipity(
+        #     past_items, true_items, pred_items
+        # )
+        # serendipity_mmr_item2vec = self.metrics_calculator.serendipity(
+        #     past_items, true_items, pred_items_mmr_item2vec
+        # )
+        # pd.DataFrame(
+        #     [
+        #         {
+        #             "model": self.__class__.__name__,
+        #             "coverage": coverage,
+        #             "gini": gini,
+        #             "dissimilarity": dissimilarity,
+        #             "novelty": novelty,
+        #             "serendipity": serendipity,
+        #         },
+        #         {
+        #             "model": f"{self.__class__.__name__}_mmr_item2vec",
+        #             "coverage": coverage_mmr_item2vec,
+        #             "gini": gini_mmr_item2vec,
+        #             "dissimilarity": dissimilarity_mmr_item2vec,
+        #             "novelty": novelty_mmr_item2vec,
+        #             "serendipity": serendipity_mmr_item2vec,
+        #         },
+        #     ]
+        # ).to_csv(result_dir.joinpath(f"{self.__class__.__name__}_sub_metrics.csv"))
+
+        # counts = list(Counter(all_pred_items).values())
+        # counts_mmr_item2vec = list(Counter(all_pred_items_mmr_item2vec).values())
+        # fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 6))
+        # ax.hist(
+        #     counts,
+        #     color="skyblue",
+        #     edgecolor="black",
+        #     alpha=0.5,
+        #     label=self.__class__.__name__,
+        # )
+        # ax.hist(
+        #     counts_mmr_item2vec,
+        #     color="orange",
+        #     edgecolor="black",
+        #     alpha=0.5,
+        #     label=f"{self.__class__.__name__}_mmr_item2vec",
+        # )
+        # ax.set_title("Histogram of Recommendation Counts per Item")
+        # ax.set_xlabel("Number of Times an Item was Recommended")
+        # ax.set_ylabel("Number of Items (Frequency)")
+        # ax.legend(title="Model", bbox_to_anchor=(1, 1), loc="upper left")
+        # fig.tight_layout()
+        # fig.savefig(result_dir.joinpath(f"{self.__class__.__name__}_rec_counts.png"))
+        # plt.close(fig)
+
+        # fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        # counts = np.array(list(Counter(all_pred_items).values()))
+        # sorted_counts = np.sort(counts)
+        # cumulative_counts = np.cumsum(sorted_counts) / np.sum(sorted_counts)
+        # cumulative_counts = np.insert(cumulative_counts, 0, 0)
+        # ax.plot(
+        #     np.linspace(0, 1, len(cumulative_counts)),
+        #     cumulative_counts,
+        #     label=self.__class__.__name__,
+        # )
+        # counts = np.array(list(Counter(all_pred_items_mmr_item2vec).values()))
+        # sorted_counts = np.sort(counts)
+        # cumulative_counts = np.cumsum(sorted_counts) / np.sum(sorted_counts)
+        # cumulative_counts = np.insert(cumulative_counts, 0, 0)
+        # ax.plot(
+        #     np.linspace(0, 1, len(cumulative_counts)),
+        #     cumulative_counts,
+        #     label=f"{self.__class__.__name__}_mmr_item2vec",
+        # )
+        # ax.plot([0, 1], [0, 1], linestyle="--", label="Line of Perfect Equality")
+        # ax.set_xlabel("Cumulative Share of Items")
+        # ax.set_ylabel("Cumulative Share of Recommnedations")
+        # ax.legend(title="Model", bbox_to_anchor=(1, 1), loc="upper left")
+        # fig.tight_layout()
+        # fig.savefig(result_dir.joinpath(f"{self.__class__.__name__}_lorenz_curve.png"))
+        # plt.close(fig)
