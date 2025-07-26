@@ -12,7 +12,7 @@ data:
   test_start_date: 2020-09-07
   test_end_date: 2020-09-07
   chunksize: 100000
-  num_customer: 10000
+  num_customer: 1000
   customer:
     usecols:
       [
@@ -45,24 +45,24 @@ data:
       ]
 candidates:
   popular:
-    topk: 20
+    topk: 30
   age_popular:
-    topk: 20
+    topk: 30
   most_freq_cat_popular:
-    topk: 20
+    topk: 30
   similar:
     min_df: 3
-    topk: 20
+    topk: 30
   item2vec:
-    topk: 20
+    topk: 30
   cooc:
-    topk: 10
+    topk: 20
   node2vec:
-    topk: 20
+    topk: 30
   transition:
-    topk: 20
+    topk: 30
   faiss:
-    topk: 20
+    topk: 30
   use:
     [
       "popular",
@@ -168,20 +168,21 @@ model:
           "product_type_name",
           "section_name",
         ]
-      cat_max_dims: 8
+      cat_max_dims: 16
       item_cat_dims: []
-      item_cat_hidden_size: 8
-      item_num_hidden_size: 8
+      item_cat_hidden_size: 16
+      item_num_hidden_size: 16
       user_cat_dims: []
-      user_cat_hidden_size: 8
-      user_num_hidden_size: 8
-      emb_size: 8
-      train_batch_size: 4
+      user_cat_hidden_size: 16
+      user_num_hidden_size: 16
+      emb_size: 16
+      train_batch_size: 64
       num_workers: 0
+      max_epoch: 1
 reranker:
   mmr_item2vec:
     w: 0
 exp:
   num_rec: 10
   ks: [1, 3, 5, 10]
-  summary_plot_num_sample: 10000
+  summary_plot_num_sample: 1000

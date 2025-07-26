@@ -200,8 +200,8 @@ class Ranker:
         item_trans_features, user_trans_features, item_user_trans_features = (
             self.create_item_user_trans_feature(trans_df.copy(), ref_date)
         )
-        user_features = self.create_user_features(customer_df, col_le)
-        item_features = self.create_item_features(article_df, col_le)
+        user_features, _ = self.create_user_features(customer_df, col_le)
+        item_features, _ = self.create_item_features(article_df, col_le)
 
         df = (
             df.merge(item_trans_features, on="article_id", how="left")

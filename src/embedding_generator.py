@@ -42,7 +42,7 @@ class EmbeddingGenerator:
 
     def create_ttm_embeddings(
         self, dataset: Dataset, ttm: TwoTowerModel
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    ) -> tuple[dict[int, np.ndarray], dict[str, np.ndarray]]:
         logger.info("Creating TwoTowerModel embeddings...")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -63,10 +63,12 @@ class EmbeddingGenerator:
                 user_embs = ttm.user_emb_model(
                     inputs["user_num_feature"], inputs["user_cat_feature"]
                 ).numpy()
-            for c_i in customer_ids:
-                customer_embs[c_i] = user_embs[c_i]
+            for c_i, customer_id in enumerate(customer_ids):
+                if np.any(np.isnan(user_embs[c_i])):
+                    continue
+                customer_embs[customer_id] = user_embs[c_i]
 
-        item_dataset = TTMItemDataset(self.cfg, dataset.customer_df)
+        item_dataset = TTMItemDataset(self.cfg, dataset.article_df)
         item_dataloader = DataLoader(
             item_dataset,
             batch_size=self.cfg.model.params.ttm.train_batch_size,
@@ -80,7 +82,9 @@ class EmbeddingGenerator:
                 inputs[k] = v.to(device)
             with torch.no_grad():
                 item_embs = ttm.item_emb_model(inputs["item_cat_feature"]).numpy()
-            for a_i in article_ids:
-                customer_embs[a_i] = item_embs[a_i]
+            for a_i, article_id in enumerate(article_ids):
+                if np.any(np.isnan(item_embs[a_i])):
+                    continue
+                article_embs[article_id.item()] = item_embs[a_i]
 
         return article_embs, customer_embs

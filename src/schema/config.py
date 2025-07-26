@@ -144,6 +144,7 @@ class ParamsTwoTowerModel(BaseModel):
     emb_size: int
     train_batch_size: int
     num_workers: int
+    max_epoch: int
 
 
 class Params(BaseModel):

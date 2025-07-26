@@ -210,7 +210,7 @@ class CandidatesGenerator:
         return candidates
 
     def generate_ttm_candidates(
-        self, article_embs: dict[str, np.ndarray], customer_embs: dict[str, np.ndarray]
+        self, article_embs: dict[int, np.ndarray], customer_embs: dict[str, np.ndarray]
     ) -> dict[str, list[str]]:
         if "ttm" not in self.cfg.candidates.use:
             return {}
@@ -228,15 +228,23 @@ class CandidatesGenerator:
         for customer_id, customer_emb in customer_embs.items():
             customer_id_batch.append(customer_id)
             customer_emb_batch.append(customer_emb)
-            if len(customer_id_batch) >= 16:
+            if len(customer_id_batch) >= 32:
                 _, article_indices_mat = index_faiss.search(
                     np.stack(customer_emb_batch), self.cfg.candidates.faiss.topk
                 )
                 for batch_i in range(len(customer_id_batch)):
+                    for article_index in article_indices_mat[batch_i]:
+                        try:
+                            index_to_id[article_index]
+                        except KeyError:
+                            breakpoint()
+                            logger.info(f"article_index = {article_index}")
                     candidates[customer_id_batch[batch_i]] = [
                         index_to_id[article_index]
                         for article_index in article_indices_mat[batch_i]
                     ]
+                customer_id_batch = []
+                customer_emb_batch = []
         if customer_id_batch:
             _, article_indices_mat = index_faiss.search(
                 np.stack(customer_emb_batch), self.cfg.candidates.faiss.topk

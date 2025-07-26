@@ -368,7 +368,7 @@ def contrastive_loss(logits: torch.Tensor) -> torch.Tensor:
 
 def plot_learning_curve(epoch_loss_history: list[float], result_dir: Path):
     plt.figure(figsize=(12, 8))
-    plt.plot([i + 1 for i in range(1)], epoch_loss_history)
+    plt.plot([i + 1 for i in range(len(epoch_loss_history))], epoch_loss_history)
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.tight_layout()
@@ -399,7 +399,7 @@ def train(cfg: Config, model: TwoTowerModel, dataset: MyDataset, result_dir: Pat
 
     model.train()
     epoch_loss_history = []
-    for epoch in range(1):
+    for epoch in range(cfg.model.params.ttm.max_epoch):
         print(f"epoch: {epoch + 1}")
         iter_loss_history = []
         for batch in ttm_dataloader:
@@ -409,11 +409,9 @@ def train(cfg: Config, model: TwoTowerModel, dataset: MyDataset, result_dir: Pat
             y_preds = model(inputs)
             loss = contrastive_loss(y_preds)
             loss.backward()
-            breakpoint()
             optimizer.step()
             optimizer.zero_grad()
             iter_loss_history.append(loss.item())
-            logger.info(f"loss: {loss}")
         epoch_loss_history.append(sum(iter_loss_history) / len(iter_loss_history))
 
     plot_learning_curve(epoch_loss_history, result_dir)
