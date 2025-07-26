@@ -1,10 +1,17 @@
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
+from src.dataset import Dataset as MyDataset
+from src.logger import get_logger
 from src.schema.config import Config
+
+logger = get_logger(__file__)
 
 
 def define_cat_dim(dim: int, max_emb_size: int) -> int:
@@ -46,7 +53,7 @@ class TTMDataset(Dataset):
     def __len__(self) -> int:
         return len(self.user_num_feature_df)
 
-    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[str, str, dict[str, torch.Tensor]]:
         customer_id = self.trans_df.iloc[index]["customer_id"]
         article_id = self.trans_df.iloc[index]["article_id"]
         user_num_feature = torch.tensor(self.user_num_feature_df.iloc[index].values).to(
@@ -120,6 +127,96 @@ class TTMDataset(Dataset):
         for c in num_cols:
             df[c] = np.log1p(df[c])
         return df
+
+
+class TTMItemDataset(Dataset):
+    def __init__(self, cfg: Config, article_df: pd.DataFrame):
+        self.item_feature_df = self.create_item_features(article_df)
+        self.item_cat_feature_df = self.item_feature_df[
+            cfg.model.params.ttm.item_cat_cols
+        ]
+
+    def __len__(self):
+        return len(self.item_cat_feature_df)
+
+    def __getitem__(self, index: int) -> tuple[str, dict[str, torch.Tensor]]:
+        article_id = self.item_feature_df.iloc[index]["article_id"]
+        item_cat_feature = torch.tensor(self.item_cat_feature_df.iloc[index].values).to(
+            torch.long
+        )
+        inputs = {"item_cat_feature": item_cat_feature}
+        return article_id, inputs
+
+    def create_item_features(self, article_df: pd.DataFrame) -> pd.DataFrame:
+        item_feature_cols = [
+            "colour_group_name",
+            "department_name",
+            "department_no",
+            "garment_group_name",
+            "graphical_appearance_name",
+            "index_group_name",
+            "index_name",
+            "perceived_colour_master_name",
+            "perceived_colour_value_name",
+            "product_group_name",
+            "product_type_name",
+            "section_name",
+        ]
+        item_features = article_df[["article_id"] + item_feature_cols].copy()
+        for col in item_feature_cols:
+            cats = article_df.loc[article_df[col].notnull()][col].unique().tolist()
+            encoding_cat_feature_dict = dict([(c, i + 1) for i, c in enumerate(cats)])
+            item_features[col] = (
+                item_features[col].map(encoding_cat_feature_dict).fillna(0).astype(int)
+            )
+        return item_features
+
+
+class TTMUserDataset(Dataset):
+    def __init__(self, cfg: Config, customer_df: pd.DataFrame):
+        self.user_features_df = self.create_user_features(customer_df)
+        self.user_num_feature_df = self.user_features_df[
+            cfg.model.params.ttm.user_num_cols
+        ]
+        self.user_cat_feature_df = self.user_features_df[
+            cfg.model.params.ttm.user_cat_cols
+        ]
+
+    def __len__(self):
+        return len(self.user_features_df)
+
+    def __getitem__(self, index: int) -> tuple[str, dict[str, torch.Tensor]]:
+        customer_id = self.user_features_df.iloc[index]["customer_id"]
+        user_num_feature = torch.tensor(self.user_num_feature_df.iloc[index].values).to(
+            torch.float32
+        )
+        user_cat_feature = torch.tensor(self.user_cat_feature_df.iloc[index].values).to(
+            torch.long
+        )
+        inputs = {
+            "user_num_feature": user_num_feature,
+            "user_cat_feature": user_cat_feature,
+        }
+        return customer_id, inputs
+
+    def create_user_features(self, customer_df: pd.DataFrame) -> pd.DataFrame:
+        user_feature_cols = [
+            "FN",
+            "Active",
+            "club_member_status",
+            "fashion_news_frequency",
+            "age",
+        ]
+        user_features = customer_df[["customer_id"] + user_feature_cols].copy()
+        for col in user_feature_cols:
+            if col == "age":
+                continue
+            cats = customer_df.loc[customer_df[col].notnull()][col].unique().tolist()
+            encoding_cat_feature_dict = dict([(c, i + 1) for i, c in enumerate(cats)])
+            user_features[col] = (
+                user_features[col].map(encoding_cat_feature_dict).fillna(0).astype(int)
+            )
+        return user_features
 
 
 class ItemEmbeddingModel(nn.Module):
@@ -267,3 +364,57 @@ def contrastive_loss(logits: torch.Tensor) -> torch.Tensor:
     return nn.functional.cross_entropy(
         logits, torch.arange(len(logits), device=logits.device)
     )
+
+
+def plot_learning_curve(epoch_loss_history: list[float], result_dir: Path):
+    plt.figure(figsize=(12, 8))
+    plt.plot([i + 1 for i in range(1)], epoch_loss_history)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.tight_layout()
+    plt.savefig(result_dir.joinpath("ttm_learning_curve.png"))
+    plt.close()
+
+
+def train(cfg: Config, model: TwoTowerModel, dataset: MyDataset, result_dir: Path):
+    logger.info("two tower model training")
+    ttm_dataset = TTMDataset(
+        cfg,
+        dataset.past_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
+        .drop_duplicates(["customer_id", "article_id"])
+        .copy(),
+        dataset.customer_df,
+        dataset.article_df,
+    )
+    ttm_dataloader = DataLoader(
+        ttm_dataset,
+        batch_size=cfg.model.params.ttm.train_batch_size,
+        shuffle=True,
+        num_workers=cfg.model.params.ttm.num_workers,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999))
+
+    model.train()
+    epoch_loss_history = []
+    for epoch in range(1):
+        print(f"epoch: {epoch + 1}")
+        iter_loss_history = []
+        for batch in ttm_dataloader:
+            _, _, inputs = batch
+            for k, v in inputs.items():
+                inputs[k] = v.to(device)
+            y_preds = model(inputs)
+            loss = contrastive_loss(y_preds)
+            loss.backward()
+            breakpoint()
+            optimizer.step()
+            optimizer.zero_grad()
+            iter_loss_history.append(loss.item())
+            logger.info(f"loss: {loss}")
+        epoch_loss_history.append(sum(iter_loss_history) / len(iter_loss_history))
+
+    plot_learning_curve(epoch_loss_history, result_dir)
+    return model

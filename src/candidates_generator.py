@@ -1,4 +1,3 @@
-import itertools
 from collections import defaultdict
 from pathlib import Path
 
@@ -7,12 +6,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import torch
-from torch.utils.data import DataLoader
 
 from src.dataset import Dataset
+from src.logger import get_logger
 from src.schema.config import Config
-from src.two_tower_model import TTMDataset, TwoTowerModel
+
+logger = get_logger(__file__)
 
 
 class CandidatesGenerator:
@@ -25,6 +24,8 @@ class CandidatesGenerator:
     def generate_popular_items(self, trans_df: pd.DataFrame) -> list[str]:
         if "popular" not in self.cfg.candidates.use:
             return []
+
+        logger.info("generate popular items")
 
         popular_items = (
             trans_df["article_id"]
@@ -39,6 +40,8 @@ class CandidatesGenerator:
     ) -> tuple[dict[str, list[str]], dict[int, str]]:
         if "age_popular" not in self.cfg.candidates.use:
             return {}, {}
+
+        logger.info("generate age popular items")
 
         df = trans_df.merge(customer_df[["customer_id", "age"]], on="customer_id")
         bins = [0, 19, 29, 39, 49, 59, 69, 120]
@@ -62,6 +65,8 @@ class CandidatesGenerator:
         if "user_past" not in self.cfg.candidates.use:
             return {}
 
+        logger.info("generate user past items")
+
         user_past_items = (
             trans_df.sort_values("t_dat", ascending=False)
             .groupby("customer_id")["article_id"]
@@ -74,6 +79,8 @@ class CandidatesGenerator:
     ) -> tuple[dict[str, str], dict[str, list[str]]]:
         if "most_freq_cat_popular" not in self.cfg.candidates.use:
             return {}, {}
+
+        logger.info("generate most frequent category popular items")
 
         df = trans_df.merge(
             article_df[["article_id", "product_type_name"]], on="article_id"
@@ -110,6 +117,8 @@ class CandidatesGenerator:
         if "same_product" not in self.cfg.candidates.use:
             return {}
 
+        logger.info("generate same product items")
+
         product_to_articles = article_df.groupby("product_code")["article_id"].apply(
             list
         )
@@ -133,6 +142,8 @@ class CandidatesGenerator:
     ) -> dict[str, list[str]]:
         if "cooc" not in self.cfg.candidates.use:
             return {}
+
+        logger.info("generate coocurrence items")
 
         cooc_map = (
             past_trans_df[["customer_id", "article_id"]]
@@ -168,6 +179,8 @@ class CandidatesGenerator:
         if "item2vec" not in self.cfg.candidates.use:
             return {}
 
+        logger.info("generate item2vec items")
+
         index_faiss = faiss.IndexFlatL2(self.cfg.model.params.item2vec.vector_size)
         index_faiss.add(np.stack([emb for emb in embeddings.values()]))
         index_to_id = {
@@ -183,9 +196,10 @@ class CandidatesGenerator:
             ]
             if not item_embs:
                 continue
-            item_embs_arr = np.stack(item_embs)
+
+            user_emb = np.mean(np.stack(item_embs), axis=0)
             _, article_indices_mat = index_faiss.search(
-                item_embs_arr, self.cfg.candidates.faiss.topk
+                np.stack([user_emb]), self.cfg.candidates.faiss.topk
             )
             candidates[customer_id] = [
                 index_to_id[article_index]
@@ -197,7 +211,12 @@ class CandidatesGenerator:
 
     def generate_ttm_candidates(
         self, article_embs: dict[str, np.ndarray], customer_embs: dict[str, np.ndarray]
-    ):
+    ) -> dict[str, list[str]]:
+        if "ttm" not in self.cfg.candidates.use:
+            return {}
+
+        logger.info("generate TwoTowerModel items")
+
         index_faiss = faiss.IndexFlatL2(self.cfg.model.params.ttm.emb_size)
         index_faiss.add(np.stack([emb for emb in article_embs.values()]))
         index_to_id = {
@@ -209,7 +228,7 @@ class CandidatesGenerator:
         for customer_id, customer_emb in customer_embs.items():
             customer_id_batch.append(customer_id)
             customer_emb_batch.append(customer_emb)
-            if len(customer_id_batch) >= 100:
+            if len(customer_id_batch) >= 16:
                 _, article_indices_mat = index_faiss.search(
                     np.stack(customer_emb_batch), self.cfg.candidates.faiss.topk
                 )
@@ -232,7 +251,7 @@ class CandidatesGenerator:
     def generate_candidates(
         self,
         dataset: Dataset,
-        all_embeddings: dict[str, dict[str, np.ndarray]],
+        article_item2vec_embs: dict[str, np.ndarray],
         article_ttm_embs: dict[str, np.ndarray],
         customer_ttm_embs: dict[str, np.ndarray],
     ) -> None:
@@ -248,15 +267,14 @@ class CandidatesGenerator:
         candidates_cooc = self.generate_cooccurence_based_candidates(
             dataset.past_trans_df
         )
-        if "item2vec" in all_embeddings:
-            candidates_item2vec = self.generate_item2vec_candidates(
-                dataset.past_trans_df, all_embeddings["item2vec"]
-            )
-        else:
-            candidates_item2vec = {}
+        candidates_item2vec = self.generate_item2vec_candidates(
+            dataset.past_trans_df, article_item2vec_embs
+        )
         candidates_ttm = self.generate_ttm_candidates(
             article_ttm_embs, customer_ttm_embs
         )
+
+        logger.info("combine candidates")
 
         candidate_sources = []
         for cid in dataset.all_customers:
@@ -308,6 +326,8 @@ class CandidatesGenerator:
         self.candidates_df = pd.DataFrame(candidate_sources).drop_duplicates()
 
     def evaluate_candidates(self, dataset: Dataset, result_dir: Path) -> None:
+        logger.info("evaluate generated candidates")
+
         eval_data = {
             "train": dataset.train_trans_df.groupby("customer_id")["article_id"]
             .apply(set)

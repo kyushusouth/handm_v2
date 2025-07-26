@@ -22,7 +22,7 @@ data:
         "club_member_status",
         "fashion_news_frequency",
         "age",
-        "postal_code",
+        # "postal_code",
       ]
   article:
     usecols:
@@ -41,37 +41,38 @@ data:
         "product_group_name",
         "product_type_name",
         "section_name",
-        "detail_desc",
+        # "detail_desc",
       ]
 candidates:
   popular:
-    topk: 50
+    topk: 20
   age_popular:
-    topk: 50
+    topk: 20
   most_freq_cat_popular:
-    topk: 50
+    topk: 20
   similar:
     min_df: 3
-    topk: 50
+    topk: 20
   item2vec:
-    topk: 50
+    topk: 20
   cooc:
-    topk: 30
+    topk: 10
   node2vec:
-    topk: 50
+    topk: 20
   transition:
-    topk: 50
+    topk: 20
   faiss:
-    topk: 30
+    topk: 20
   use:
     [
       "popular",
-      # "age_popular",
-      # "user_past",
-      # "most_freq_cat_popular",
-      # "same_product",
-      # "item2vec",
-      # "cooc",
+      "age_popular",
+      "user_past",
+      "most_freq_cat_popular",
+      "same_product",
+      "item2vec",
+      "cooc",
+      "ttm",
     ]
 model:
   features:
@@ -91,6 +92,7 @@ model:
         "user_item_purchase_cnt",
         "age",
         "item2vec_affinity_score",
+        "ttm_affinity_score",
       ]
     cat:
       [
@@ -132,7 +134,7 @@ model:
       vector_size: 64
       window: 5
       min_count: 3
-      workers: 1
+      workers: 0
       sg: 1
     cooc:
       n_components: 64
@@ -166,16 +168,16 @@ model:
           "product_type_name",
           "section_name",
         ]
-      cat_max_dims: 16
+      cat_max_dims: 8
       item_cat_dims: []
-      item_cat_hidden_size: 16
-      item_num_hidden_size: 16
+      item_cat_hidden_size: 8
+      item_num_hidden_size: 8
       user_cat_dims: []
-      user_cat_hidden_size: 16
-      user_num_hidden_size: 16
-      emb_size: 10
-      train_batch_size: 16
-      num_workers: 4
+      user_cat_hidden_size: 8
+      user_num_hidden_size: 8
+      emb_size: 8
+      train_batch_size: 4
+      num_workers: 0
 reranker:
   mmr_item2vec:
     w: 0

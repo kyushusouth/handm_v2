@@ -3,7 +3,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.logger import get_logger
 from src.schema.config import Config
+
+logger = get_logger(__file__)
 
 
 class Dataset:
@@ -18,6 +21,8 @@ class Dataset:
     all_articles: np.ndarray
 
     def __init__(self, cfg: Config) -> None:
+        logger.info("load data")
+
         self.cfg = cfg
 
         self.past_start_date = pd.to_datetime(self.cfg.data.past_start_date)

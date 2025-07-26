@@ -5,9 +5,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import shap
 
+from src.logger import get_logger
 from src.metrics_calculator import MetricsCalculator
 from src.ranker import Ranker
 from src.schema.config import Config
+
+logger = get_logger(__file__)
 
 
 class CatRanker(Ranker):
@@ -19,6 +22,7 @@ class CatRanker(Ranker):
         super().__init__(cfg, metrics_calculator)
 
     def train(self, result_dir: Path) -> "CatRanker":
+        logger.info("train ranker")
         train_pool = cat.Pool(
             self.train_trans_df[
                 self.cfg.model.features.cat + self.cfg.model.features.num

@@ -1,18 +1,15 @@
-from itertools import combinations
-
 import gensim
-import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
-from node2vec import Node2Vec
-from scipy.sparse import coo_matrix
-from sklearn.decomposition import TruncatedSVD
 from torch.utils.data import DataLoader
 
 from src.dataset import Dataset
+from src.logger import get_logger
 from src.schema.config import Config
-from src.two_tower_model import TTMDataset, TwoTowerModel
+from src.two_tower_model import TTMItemDataset, TTMUserDataset, TwoTowerModel
+
+logger = get_logger(__file__)
 
 
 class EmbeddingGenerator:
@@ -22,7 +19,8 @@ class EmbeddingGenerator:
     def create_item2vec_embeddings(
         self, trans_df: pd.DataFrame
     ) -> dict[str, np.ndarray]:
-        print("Creating item2vec embeddings...")
+        logger.info("Creating item2vec embeddings...")
+
         purchase_histories = (
             trans_df.sort_values("t_dat", ascending=True)
             .groupby("customer_id")["article_id"]
@@ -45,133 +43,44 @@ class EmbeddingGenerator:
     def create_ttm_embeddings(
         self, dataset: Dataset, ttm: TwoTowerModel
     ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-        print("Creating TwoTowerModel embeddings...")
-        base_df = dataset.customer_df[["customer_id"]].merge(
-            dataset.article_df[["article_id"]], how="cross"
-        )
-        ttm_dataset = TTMDataset(
-            self.cfg,
-            base_df,
-            dataset.customer_df,
-            dataset.article_df,
-        )
-        ttm_dataloader = DataLoader(
-            ttm_dataset,
+        logger.info("Creating TwoTowerModel embeddings...")
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        user_dataset = TTMUserDataset(self.cfg, dataset.customer_df)
+        user_dataloader = DataLoader(
+            user_dataset,
             batch_size=self.cfg.model.params.ttm.train_batch_size,
             shuffle=False,
             num_workers=self.cfg.model.params.ttm.num_workers,
         )
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        article_embs = {}
         customer_embs = {}
-        for batch_i, batch in enumerate(ttm_dataloader):
-            print(f"{batch_i} / {len(ttm_dataloader)}")
-            customer_ids, article_ids, inputs = batch
+        for batch in user_dataloader:
+            customer_ids, inputs = batch
+            for k, v in inputs.items():
+                inputs[k] = v.to(device)
+            with torch.no_grad():
+                user_embs = ttm.user_emb_model(
+                    inputs["user_num_feature"], inputs["user_cat_feature"]
+                ).numpy()
+            for c_i in customer_ids:
+                customer_embs[c_i] = user_embs[c_i]
+
+        item_dataset = TTMItemDataset(self.cfg, dataset.customer_df)
+        item_dataloader = DataLoader(
+            item_dataset,
+            batch_size=self.cfg.model.params.ttm.train_batch_size,
+            shuffle=False,
+            num_workers=self.cfg.model.params.ttm.num_workers,
+        )
+        article_embs = {}
+        for batch in item_dataloader:
+            article_ids, inputs = batch
             for k, v in inputs.items():
                 inputs[k] = v.to(device)
             with torch.no_grad():
                 item_embs = ttm.item_emb_model(inputs["item_cat_feature"]).numpy()
-                user_embs = ttm.user_emb_model(
-                    inputs["user_num_feature"], inputs["user_cat_feature"]
-                ).numpy()
-            for c_i in range(len(customer_ids)):
-                article_embs[article_ids[c_i]] = item_embs[c_i]
-                customer_embs[customer_ids[c_i]] = user_embs[c_i]
-            if batch_i > 100:
-                break
+            for a_i in article_ids:
+                customer_embs[a_i] = item_embs[a_i]
 
         return article_embs, customer_embs
-
-    def create_cooccurrence_embeddings(
-        self, trans_df: pd.DataFrame
-    ) -> dict[str, np.ndarray]:
-        print("Creating co-occurrence embeddings with SVD...")
-        daily_purchases = (
-            trans_df.groupby(["t_dat", "customer_id"])["article_id"]
-            .apply(list)
-            .reset_index()
-        )
-
-        all_articles = trans_df["article_id"].unique()
-        id2idx = {aid: i for i, aid in enumerate(all_articles)}
-        idx2id = {i: aid for i, aid in enumerate(all_articles)}
-        n_items = len(all_articles)
-
-        rows, cols, data = [], [], []
-        for articles in daily_purchases["article_id"]:
-            for i, j in combinations(articles, 2):
-                idx_i, idx_j = id2idx[i], id2idx[j]
-                rows.extend([idx_i, idx_j])
-                cols.extend([idx_j, idx_i])
-                data.extend([1, 1])
-
-        cooc_matrix = coo_matrix(
-            (data, (rows, cols)), shape=(n_items, n_items), dtype=np.float32
-        )
-
-        if self.cfg.model.params.cooc.use_ppmi:
-            total_events = cooc_matrix.sum()
-            row_sum = np.array(cooc_matrix.sum(axis=1)).flatten()
-            col_sum = np.array(cooc_matrix.sum(axis=0)).flatten()
-
-            row_sum[row_sum == 0] = 1
-            col_sum[col_sum == 0] = 1
-
-            cooc_matrix_csr = cooc_matrix.tocsr()
-            ppmi_rows, ppmi_cols, ppmi_data = [], [], []
-
-            for i in range(n_items):
-                for j in range(
-                    cooc_matrix_csr.indptr[i], cooc_matrix_csr.indptr[i + 1]
-                ):
-                    col = cooc_matrix_csr.indices[j]
-                    val = cooc_matrix_csr.data[j]
-
-                    # p(i, j) = count(i, j) / total_events
-                    # p(i) = row_sum(i) / total_events
-                    # p(j) = col_sum(j) / total_events
-                    # p(i, j) / p(i) * p(j) = (count(i, j) * total_events) / (row_sum(i) * col_sum(j))
-                    pmi = np.log2(val * total_events / (row_sum[i] * col_sum[col]))
-                    if pmi > 0:
-                        ppmi_rows.append(i)
-                        ppmi_cols.append(col)
-                        ppmi_data.append(pmi)
-
-            cooc_matrix = coo_matrix(
-                (ppmi_data, (ppmi_rows, ppmi_cols)),
-                shape=(n_items, n_items),
-                dtype=np.float32,
-            )
-
-        svd = TruncatedSVD(
-            n_components=self.cfg.model.params.cooc.n_components,
-            random_state=self.cfg.seed,
-        )
-        item_vectors = svd.fit_transform(cooc_matrix)
-        item_embeddings = {idx2id[i]: item_vectors[i] for i in range(n_items)}
-        return item_embeddings
-
-    def create_graph_embeddings(self, trans_df: pd.DataFrame) -> dict[str, np.ndarray]:
-        print("Creating graph embeddings with Node2Vec...")
-        edges = trans_df[["customer_id", "article_id"]].drop_duplicates().values
-        graph = nx.Graph()
-        graph.add_edges_from(edges)
-
-        node2vec = Node2Vec(
-            graph,
-            dimensions=self.cfg.model.params.node2vec.dimensions,
-            walk_length=self.cfg.model.params.node2vec.walk_length,
-            num_walks=self.cfg.model.params.node2vec.num_walks,
-            p=self.cfg.model.params.node2vec.p,
-            q=self.cfg.model.params.node2vec.q,
-            workers=self.cfg.model.params.node2vec.workers,
-        )
-        model = node2vec.fit(
-            window=self.cfg.model.params.node2vec.window,
-            min_count=self.cfg.model.params.node2vec.min_count,
-        )
-
-        item_ids = trans_df["article_id"].unique()
-        item_embeddings = {aid: model.wv[aid] for aid in item_ids if aid in model.wv}
-        return item_embeddings
