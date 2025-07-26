@@ -4,11 +4,15 @@ import gensim
 import networkx as nx
 import numpy as np
 import pandas as pd
+import torch
 from node2vec import Node2Vec
 from scipy.sparse import coo_matrix
 from sklearn.decomposition import TruncatedSVD
+from torch.utils.data import DataLoader
 
+from src.dataset import Dataset
 from src.schema.config import Config
+from src.two_tower_model import TTMDataset, TwoTowerModel
 
 
 class EmbeddingGenerator:
@@ -37,6 +41,47 @@ class EmbeddingGenerator:
             article_id: model.wv[article_id] for article_id in model.wv.index_to_key
         }
         return item_embeddings
+
+    def create_ttm_embeddings(
+        self, dataset: Dataset, ttm: TwoTowerModel
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        print("Creating TwoTowerModel embeddings...")
+        base_df = dataset.customer_df[["customer_id"]].merge(
+            dataset.article_df[["article_id"]], how="cross"
+        )
+        ttm_dataset = TTMDataset(
+            self.cfg,
+            base_df,
+            dataset.customer_df,
+            dataset.article_df,
+        )
+        ttm_dataloader = DataLoader(
+            ttm_dataset,
+            batch_size=self.cfg.model.params.ttm.train_batch_size,
+            shuffle=False,
+            num_workers=self.cfg.model.params.ttm.num_workers,
+        )
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        article_embs = {}
+        customer_embs = {}
+        for batch_i, batch in enumerate(ttm_dataloader):
+            print(f"{batch_i} / {len(ttm_dataloader)}")
+            customer_ids, article_ids, inputs = batch
+            for k, v in inputs.items():
+                inputs[k] = v.to(device)
+            with torch.no_grad():
+                item_embs = ttm.item_emb_model(inputs["item_cat_feature"]).numpy()
+                user_embs = ttm.user_emb_model(
+                    inputs["user_num_feature"], inputs["user_cat_feature"]
+                ).numpy()
+            for c_i in range(len(customer_ids)):
+                article_embs[article_ids[c_i]] = item_embs[c_i]
+                customer_embs[customer_ids[c_i]] = user_embs[c_i]
+            if batch_i > 100:
+                break
+
+        return article_embs, customer_embs
 
     def create_cooccurrence_embeddings(
         self, trans_df: pd.DataFrame

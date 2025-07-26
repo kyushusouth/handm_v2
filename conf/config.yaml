@@ -12,7 +12,37 @@ data:
   test_start_date: 2020-09-07
   test_end_date: 2020-09-07
   chunksize: 100000
-  num_customer: 20000
+  num_customer: 10000
+  customer:
+    usecols:
+      [
+        "customer_id",
+        "FN",
+        "Active",
+        "club_member_status",
+        "fashion_news_frequency",
+        "age",
+        "postal_code",
+      ]
+  article:
+    usecols:
+      [
+        "article_id",
+        "product_code",
+        "colour_group_name",
+        "department_name",
+        "department_no",
+        "garment_group_name",
+        "graphical_appearance_name",
+        "index_group_name",
+        "index_name",
+        "perceived_colour_master_name",
+        "perceived_colour_value_name",
+        "product_group_name",
+        "product_type_name",
+        "section_name",
+        "detail_desc",
+      ]
 candidates:
   popular:
     topk: 50
@@ -26,23 +56,22 @@ candidates:
   item2vec:
     topk: 50
   cooc:
-    topk: 50
+    topk: 30
   node2vec:
     topk: 50
   transition:
     topk: 50
+  faiss:
+    topk: 30
   use:
     [
       "popular",
-      "age_popular",
-      "user_past",
-      "most_freq_cat_popular",
-      "similar",
-      "same_product",
-      # "transition",
+      # "age_popular",
+      # "user_past",
+      # "most_freq_cat_popular",
+      # "same_product",
       # "item2vec",
       # "cooc",
-      # "node2vec",
     ]
 model:
   features:
@@ -100,16 +129,16 @@ model:
       depth: 5
       early_stopping_round: 50
     item2vec:
-      vector_size: 16
+      vector_size: 64
       window: 5
       min_count: 3
       workers: 1
       sg: 1
     cooc:
-      n_components: 16
+      n_components: 64
       use_ppmi: true
     node2vec:
-      dimensions: 16
+      dimensions: 64
       p: 1.0
       q: 1.0
       walk_length: 5
@@ -117,6 +146,36 @@ model:
       workers: 1
       window: 8
       min_count: 5
+    ttm:
+      user_num_cols: ["age"]
+      item_num_cols: []
+      user_cat_cols:
+        ["FN", "Active", "club_member_status", "fashion_news_frequency"]
+      item_cat_cols:
+        [
+          "colour_group_name",
+          "department_name",
+          "department_no",
+          "garment_group_name",
+          "graphical_appearance_name",
+          "index_group_name",
+          "index_name",
+          "perceived_colour_master_name",
+          "perceived_colour_value_name",
+          "product_group_name",
+          "product_type_name",
+          "section_name",
+        ]
+      cat_max_dims: 16
+      item_cat_dims: []
+      item_cat_hidden_size: 16
+      item_num_hidden_size: 16
+      user_cat_dims: []
+      user_cat_hidden_size: 16
+      user_num_hidden_size: 16
+      emb_size: 10
+      train_batch_size: 16
+      num_workers: 4
 reranker:
   mmr_item2vec:
     w: 0

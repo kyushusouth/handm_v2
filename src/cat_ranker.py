@@ -7,7 +7,6 @@ import shap
 
 from src.metrics_calculator import MetricsCalculator
 from src.ranker import Ranker
-from src.reranker_item2vec import MMRRerankerItemEmbeddingSimilarity
 from src.schema.config import Config
 
 
@@ -16,9 +15,8 @@ class CatRanker(Ranker):
         self,
         cfg: Config,
         metrics_calculator: MetricsCalculator,
-        reranker: MMRRerankerItemEmbeddingSimilarity,
     ) -> None:
-        super().__init__(cfg, metrics_calculator, reranker)
+        super().__init__(cfg, metrics_calculator)
 
     def train(self, result_dir: Path) -> "CatRanker":
         train_pool = cat.Pool(

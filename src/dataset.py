@@ -57,7 +57,11 @@ class Dataset:
         customers_path = Path(__file__).parent.parent.joinpath(
             self.cfg.data.customers_path
         )
-        for chunk in pd.read_csv(customers_path, chunksize=self.cfg.data.chunksize):
+        for chunk in pd.read_csv(
+            customers_path,
+            chunksize=self.cfg.data.chunksize,
+            usecols=cfg.data.customer.usecols,
+        ):
             filtered_chunk = chunk.loc[chunk["customer_id"].isin(self.all_customers)]
             if not filtered_chunk.empty:
                 filtered_chunks.append(filtered_chunk)
@@ -67,7 +71,11 @@ class Dataset:
         articles_path = Path(__file__).parent.parent.joinpath(
             self.cfg.data.articles_path
         )
-        for chunk in pd.read_csv(articles_path, chunksize=self.cfg.data.chunksize):
+        for chunk in pd.read_csv(
+            articles_path,
+            chunksize=self.cfg.data.chunksize,
+            usecols=cfg.data.article.usecols,
+        ):
             filtered_chunk = chunk.loc[chunk["article_id"].isin(self.all_articles)]
             if not filtered_chunk.empty:
                 filtered_chunks.append(filtered_chunk)
@@ -85,6 +93,7 @@ class Dataset:
             ]
             .copy()
             .merge(self.past_trans_df[["customer_id"]], on=["customer_id"], how="inner")
+            .merge(self.past_trans_df[["article_id"]], on="article_id", how="inner")
         )
 
         self.val_trans_df = (
@@ -94,6 +103,7 @@ class Dataset:
             ]
             .copy()
             .merge(self.past_trans_df[["customer_id"]], on=["customer_id"], how="inner")
+            .merge(self.past_trans_df[["article_id"]], on="article_id", how="inner")
         )
 
         self.test_trans_df = (
@@ -103,4 +113,5 @@ class Dataset:
             ]
             .copy()
             .merge(self.past_trans_df[["customer_id"]], on=["customer_id"], how="inner")
+            .merge(self.past_trans_df[["article_id"]], on="article_id", how="inner")
         )

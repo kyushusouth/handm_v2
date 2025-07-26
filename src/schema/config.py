@@ -4,6 +4,14 @@ import yaml
 from pydantic import BaseModel
 
 
+class DataCustomer(BaseModel):
+    usecols: list[str]
+
+
+class DataArticle(BaseModel):
+    usecols: list[str]
+
+
 class Data(BaseModel):
     articles_path: str
     customers_path: str
@@ -18,6 +26,8 @@ class Data(BaseModel):
     test_end_date: date
     chunksize: int
     num_customer: int
+    customer: DataCustomer
+    article: DataArticle
 
 
 class Popular(BaseModel):
@@ -53,6 +63,10 @@ class Transition(BaseModel):
     topk: int
 
 
+class Faiss(BaseModel):
+    topk: int
+
+
 class Candidates(BaseModel):
     popular: Popular
     age_popular: AgePopular
@@ -62,6 +76,7 @@ class Candidates(BaseModel):
     cooc: COOC
     node2vec: Node2Vec
     transition: Transition
+    faiss: Faiss
     use: list[str]
 
 
@@ -114,12 +129,30 @@ class ParamsNode2Vec(BaseModel):
     min_count: int
 
 
+class ParamsTwoTowerModel(BaseModel):
+    user_num_cols: list[str]
+    item_num_cols: list[str]
+    user_cat_cols: list[str]
+    item_cat_cols: list[str]
+    cat_max_dims: int
+    item_cat_dims: list[int]
+    item_cat_hidden_size: int
+    item_num_hidden_size: int
+    user_cat_dims: list[int]
+    user_cat_hidden_size: int
+    user_num_hidden_size: int
+    emb_size: int
+    train_batch_size: int
+    num_workers: int
+
+
 class Params(BaseModel):
     lgb: ParamsLGBM
     cat: ParamsCatBoost
     item2vec: ParamsItem2Vec
     cooc: ParamsCooccurence
     node2vec: ParamsNode2Vec
+    ttm: ParamsTwoTowerModel
 
 
 class Model(BaseModel):

@@ -16,9 +16,8 @@ class LGBRanker(Ranker):
         self,
         cfg: Config,
         metrics_calculator: MetricsCalculator,
-        reranker: MMRRerankerItemEmbeddingSimilarity,
     ) -> None:
-        super().__init__(cfg, metrics_calculator, reranker)
+        super().__init__(cfg, metrics_calculator)
 
     def train(self, result_dir: Path) -> "LGBRanker":
         self.ranker = lgb.LGBMRanker(

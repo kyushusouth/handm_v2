@@ -8,19 +8,17 @@ class PopularityBasedFairness:
     def __init__(
         self,
         all_items_df: pd.DataFrame,
-        item_id_col: str,
         popularity_col: str,
         num_bins: int,
     ):
-        self.item_to_bin = pd.Series(
-            pd.qcut(
-                all_items_df[popularity_col],
-                q=num_bins,
-                labels=False,
-                duplicates="drop",
-            ),
-            index=all_items_df[item_id_col],
-        ).to_dict()
+        all_items_df["popularity_bin"] = pd.qcut(
+            all_items_df[popularity_col], q=num_bins, labels=False, duplicates="drop"
+        )
+        self.item_to_bin = (
+            all_items_df[["article_id", "popularity_bin"]]
+            .set_index("article_id")
+            .to_dict()
+        )
 
     def calculate_fairness_score(self, item_list: list[str]) -> float:
         if not item_list:
