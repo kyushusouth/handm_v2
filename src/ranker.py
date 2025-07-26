@@ -1,4 +1,3 @@
-from collections import Counter
 from datetime import date
 from pathlib import Path
 
@@ -9,9 +8,11 @@ import seaborn as sns
 from sklearn.preprocessing import LabelEncoder
 
 from src.dataset import Dataset
+from src.logger import get_logger
 from src.metrics_calculator import MetricsCalculator
-from src.reranker_fairness import FairReranker
 from src.schema.config import Config
+
+logger = get_logger(__file__)
 
 
 class Ranker:
@@ -19,42 +20,14 @@ class Ranker:
         self,
         cfg: Config,
         metrics_calculator: MetricsCalculator,
-        reranker: FairReranker,
     ) -> None:
         self.cfg = cfg
         self.metrics_calculator = metrics_calculator
-        self.reranker = reranker
 
-    def create_ranking_features(
-        self,
-        df: pd.DataFrame,
-        trans_df: pd.DataFrame,
-        customer_df: pd.DataFrame,
-        article_df: pd.DataFrame,
-        ref_date: date,
-        all_embeddings: dict[str, dict[str, np.ndarray]],
-        col_le: dict[str, LabelEncoder] | dict,
+    def create_user_features(
+        self, customer_df: pd.DataFrame, col_le: dict[str, LabelEncoder]
     ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
-        trans_df["days_since_purchase"] = (ref_date - trans_df["t_dat"]).dt.days
-        item_trans_features = trans_df.groupby("article_id").agg(
-            item_purchase_cnt=("customer_id", "size"),
-            item_purchase_nunique=("customer_id", "nunique"),
-            item_days_since_last_purchase=("days_since_purchase", "min"),
-            item_price_mean=("price", "mean"),
-            item_price_std=("price", "std"),
-        )
-        user_trans_features = trans_df.groupby("customer_id").agg(
-            user_purchase_cnt=("article_id", "size"),
-            user_purchase_nunique=("article_id", "nunique"),
-            user_days_since_last_purchase=("days_since_purchase", "min"),
-            user_price_mean=("price", "mean"),
-            user_price_std=("price", "std"),
-            user_price_sum=("price", "sum"),
-        )
-        item_user_trans_features = trans_df.groupby(["customer_id", "article_id"]).agg(
-            user_item_purchase_cnt=("customer_id", "size")
-        )
-
+        logger.info("create user features")
         user_feature_cols = [
             "FN",
             "Active",
@@ -73,7 +46,12 @@ class Ranker:
                 le = LabelEncoder()
                 user_features[col] = le.fit_transform(user_features[col].astype(str))
                 col_le[col] = le
+        return user_features, col_le
 
+    def create_item_features(
+        self, article_df: pd.DataFrame, col_le: dict[str, LabelEncoder]
+    ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
+        logger.info("create item features")
         item_feature_cols = [
             "colour_group_name",
             "department_name",
@@ -97,6 +75,133 @@ class Ranker:
                 le = LabelEncoder()
                 item_features[col] = le.fit_transform(item_features[col].astype(str))
                 col_le[col] = le
+        return item_features, col_le
+
+    def create_item_user_trans_feature(
+        self, trans_df: pd.DataFrame, ref_date: date
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        logger.info("create item user trans features")
+        trans_df["days_since_purchase"] = (ref_date - trans_df["t_dat"]).dt.days
+        item_trans_features = trans_df.groupby("article_id").agg(
+            item_purchase_cnt=("customer_id", "size"),
+            item_purchase_nunique=("customer_id", "nunique"),
+            item_days_since_last_purchase=("days_since_purchase", "min"),
+            item_price_mean=("price", "mean"),
+            item_price_std=("price", "std"),
+        )
+        user_trans_features = trans_df.groupby("customer_id").agg(
+            user_purchase_cnt=("article_id", "size"),
+            user_purchase_nunique=("article_id", "nunique"),
+            user_days_since_last_purchase=("days_since_purchase", "min"),
+            user_price_mean=("price", "mean"),
+            user_price_std=("price", "std"),
+            user_price_sum=("price", "sum"),
+        )
+        item_user_trans_features = trans_df.groupby(["customer_id", "article_id"]).agg(
+            user_item_purchase_cnt=("customer_id", "size")
+        )
+        return item_trans_features, user_trans_features, item_user_trans_features
+
+    def merge_item2vec_feature(
+        self,
+        article_item2vec_embs: dict[str, np.ndarray],
+        trans_df: pd.DataFrame,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        logger.info("create item2vec features")
+        emb_df = pd.DataFrame(article_item2vec_embs).T.reset_index()
+        emb_df.columns = ["article_id"] + [
+            f"item2vec_emb_{i}"
+            for i in range(self.cfg.model.params.item2vec.vector_size)
+        ]
+
+        user_history_df = trans_df[["customer_id", "article_id"]].merge(
+            emb_df, on="article_id", how="inner"
+        )
+        user_profile = (
+            user_history_df.drop(columns="article_id").groupby("customer_id").mean()
+        )
+        user_profile = user_profile.add_prefix("user_profile_")
+
+        df = df.merge(user_profile, on="customer_id", how="left").merge(
+            emb_df, on="article_id", how="left"
+        )
+
+        user_vec_cols = [
+            f"user_profile_item2vec_emb_{i}"
+            for i in range(self.cfg.model.params.item2vec.vector_size)
+        ]
+        item_vec_cols = [
+            f"item2vec_emb_{i}"
+            for i in range(self.cfg.model.params.item2vec.vector_size)
+        ]
+
+        valid_rows = df[user_vec_cols[0]].notna() & df[item_vec_cols[0]].notna()
+        user_vectors = df.loc[valid_rows, user_vec_cols].values
+        item_vectors = df.loc[valid_rows, item_vec_cols].values
+        dot_products = (user_vectors * item_vectors).sum(axis=1)
+
+        df["item2vec_affinity_score"] = 0.0
+        df.loc[valid_rows, "item2vec_affinity_score"] = dot_products
+        df = df.drop(columns=user_vec_cols + item_vec_cols)
+        return df
+
+    def merge_ttm_feature(
+        self,
+        article_ttm_embs: dict[str, np.ndarray],
+        customer_ttm_embs: dict[str, np.ndarray],
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        logger.info("create TwoTowerModel features")
+        article_emb_df = pd.DataFrame(article_ttm_embs).T.reset_index()
+        article_emb_df.columns = ["article_id"] + [
+            f"article_emb_{i}" for i in range(self.cfg.model.params.ttm.emb_size)
+        ]
+
+        customer_emb_df = pd.DataFrame(customer_ttm_embs).T.reset_index()
+        customer_emb_df.columns = ["customer_id"] + [
+            f"customer_emb_{i}" for i in range(self.cfg.model.params.ttm.emb_size)
+        ]
+
+        df = df.merge(customer_emb_df, on="customer_id", how="left").merge(
+            article_emb_df, on="article_id", how="left"
+        )
+
+        user_vec_cols = [
+            f"customer_emb_{i}" for i in range(self.cfg.model.params.ttm.emb_size)
+        ]
+        item_vec_cols = [
+            f"article_emb_{i}" for i in range(self.cfg.model.params.ttm.emb_size)
+        ]
+
+        valid_rows = df[user_vec_cols[0]].notna() & df[item_vec_cols[0]].notna()
+        user_vectors = df.loc[valid_rows, user_vec_cols].values
+        item_vectors = df.loc[valid_rows, item_vec_cols].values
+        dot_products = (user_vectors * item_vectors).sum(axis=1)
+
+        df["ttm_affinity_score"] = 0.0
+        df.loc[valid_rows, "ttm_affinity_score"] = dot_products
+        df = df.drop(columns=user_vec_cols + item_vec_cols)
+        return df
+
+    def create_ranking_features(
+        self,
+        df: pd.DataFrame,
+        trans_df: pd.DataFrame,
+        customer_df: pd.DataFrame,
+        article_df: pd.DataFrame,
+        ref_date: date,
+        article_item2vec_embs: dict[str, np.ndarray],
+        article_ttm_embs: dict[str, np.ndarray],
+        customer_ttm_embs: dict[str, np.ndarray],
+        col_le: dict[str, LabelEncoder] | dict,
+    ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
+        logger.info("create ranking features")
+        item_trans_features, user_trans_features, item_user_trans_features = (
+            self.create_item_user_trans_feature(trans_df.copy(), ref_date)
+        )
+        user_features, _ = self.create_user_features(customer_df, col_le)
+        item_features, _ = self.create_item_features(article_df, col_le)
 
         df = (
             df.merge(item_trans_features, on="article_id", how="left")
@@ -107,81 +212,71 @@ class Ranker:
             .merge(user_features, on="customer_id", how="left")
             .merge(item_features, on="article_id", how="left")
         )
-
-        for emb_name, item_embeddings in all_embeddings.items():
-            if not item_embeddings:
-                continue
-
-            embedding_dim = next(iter(item_embeddings.values())).shape[0]
-            emb_df = pd.DataFrame(item_embeddings).T.reset_index()
-            emb_df.columns = ["article_id"] + [
-                f"{emb_name}_emb_{i}" for i in range(embedding_dim)
-            ]
-
-            user_history_df = trans_df[["customer_id", "article_id"]].merge(
-                emb_df, on="article_id", how="inner"
-            )
-            user_profile = (
-                user_history_df.drop(columns="article_id").groupby("customer_id").mean()
-            )
-            user_profile = user_profile.add_prefix("user_profile_")
-
-            df = df.merge(user_profile, on="customer_id", how="left")
-            df = df.merge(emb_df, on="article_id", how="left")
-
-            user_vec_cols = [
-                f"user_profile_{emb_name}_emb_{i}" for i in range(embedding_dim)
-            ]
-            item_vec_cols = [f"{emb_name}_emb_{i}" for i in range(embedding_dim)]
-
-            valid_rows = df[user_vec_cols[0]].notna() & df[item_vec_cols[0]].notna()
-            user_vectors = df.loc[valid_rows, user_vec_cols].values
-            item_vectors = df.loc[valid_rows, item_vec_cols].values
-
-            dot_products = (user_vectors * item_vectors).sum(axis=1)
-
-            df[f"{emb_name}_affinity_score"] = 0.0
-            df.loc[valid_rows, f"{emb_name}_affinity_score"] = dot_products
-
-            df = df.drop(columns=user_vec_cols + item_vec_cols)
-
+        df = self.merge_item2vec_feature(article_item2vec_embs, trans_df, df)
+        # df = self.merge_ttm_feature(article_ttm_embs, customer_ttm_embs, df)
         return df, col_le
 
     def preprocess(
         self,
         dataset: Dataset,
         candidates_df: pd.DataFrame,
-        all_embeddings: dict[str, dict[str, np.ndarray]],
+        article_item2vec_embs: dict[str, np.ndarray],
+        article_ttm_embs: dict[str, np.ndarray],
+        customer_ttm_embs: dict[str, np.ndarray],
     ):
+        logger.info("proprocess")
         train_trans_df = (
-            dataset.train_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
-            .drop_duplicates(["customer_id", "article_id"])
+            dataset.train_trans_df.drop(columns=["price", "sales_channel_id"])
+            .drop_duplicates(["t_dat", "customer_id", "article_id"])
             .copy()
         )
         val_trans_df = (
-            dataset.val_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
-            .drop_duplicates(["customer_id", "article_id"])
+            dataset.val_trans_df.drop(columns=["price", "sales_channel_id"])
+            .drop_duplicates(["t_dat", "customer_id", "article_id"])
             .copy()
         )
         test_trans_df = (
-            dataset.test_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
-            .drop_duplicates(["customer_id", "article_id"])
+            dataset.test_trans_df.drop(columns=["price", "sales_channel_id"])
+            .drop_duplicates(["t_dat", "customer_id", "article_id"])
             .copy()
         )
 
-        train_trans_df.loc[:, "purchased"] = 1
-        val_trans_df.loc[:, "purchased"] = 1
-        test_trans_df.loc[:, "purchased"] = 1
+        train_trans_df["purchased"] = 1
+        val_trans_df["purchased"] = 1
+        test_trans_df["purchased"] = 1
 
-        train_trans_df = candidates_df.merge(
-            train_trans_df, on=["customer_id", "article_id"], how="left"
-        ).fillna(0)
-        val_trans_df = candidates_df.merge(
-            val_trans_df, on=["customer_id", "article_id"], how="left"
-        ).fillna(0)
-        test_trans_df = candidates_df.merge(
-            test_trans_df, on=["customer_id", "article_id"], how="left"
-        ).fillna(0)
+        train_trans_df = (
+            candidates_df[["customer_id", "article_id"]]
+            .merge(
+                train_trans_df[["t_dat", "customer_id"]].drop_duplicates(),
+                on="customer_id",
+                how="inner",
+            )
+            .merge(
+                train_trans_df, on=["t_dat", "customer_id", "article_id"], how="left"
+            )
+            .fillna(0)
+        )
+        val_trans_df = (
+            candidates_df[["customer_id", "article_id"]]
+            .merge(
+                val_trans_df[["t_dat", "customer_id"]].drop_duplicates(),
+                on="customer_id",
+                how="inner",
+            )
+            .merge(val_trans_df, on=["t_dat", "customer_id", "article_id"], how="left")
+            .fillna(0)
+        )
+        test_trans_df = (
+            candidates_df[["customer_id", "article_id"]]
+            .merge(
+                test_trans_df[["t_dat", "customer_id"]].drop_duplicates(),
+                on="customer_id",
+                how="inner",
+            )
+            .merge(test_trans_df, on=["t_dat", "customer_id", "article_id"], how="left")
+            .fillna(0)
+        )
 
         train_trans_df = train_trans_df.merge(
             train_trans_df.groupby("customer_id")
@@ -199,14 +294,16 @@ class Ranker:
             on=["customer_id"],
             how="inner",
         )
-        test_trans_df = test_trans_df.merge(
-            test_trans_df.groupby("customer_id")
-            .agg(has_purchased_item=("purchased", "max"))
-            .query("has_purchased_item == 1")
-            .reset_index(drop=False)[["customer_id"]],
-            on=["customer_id"],
-            how="inner",
-        )
+
+        train_trans_df["group_id"] = train_trans_df.groupby(
+            ["t_dat", "customer_id"]
+        ).ngroup()
+        val_trans_df["group_id"] = val_trans_df.groupby(
+            ["t_dat", "customer_id"]
+        ).ngroup()
+        test_trans_df["group_id"] = test_trans_df.groupby(
+            ["t_dat", "customer_id"]
+        ).ngroup()
 
         col_le = {}
         train_trans_df, col_le = self.create_ranking_features(
@@ -215,7 +312,9 @@ class Ranker:
             dataset.customer_df,
             dataset.article_df,
             dataset.train_start_date,
-            all_embeddings,
+            article_item2vec_embs,
+            article_ttm_embs,
+            customer_ttm_embs,
             col_le,
         )
         val_trans_df, col_le = self.create_ranking_features(
@@ -224,7 +323,9 @@ class Ranker:
             dataset.customer_df,
             dataset.article_df,
             dataset.val_start_date,
-            all_embeddings,
+            article_item2vec_embs,
+            article_ttm_embs,
+            customer_ttm_embs,
             col_le,
         )
         test_trans_df, col_le = self.create_ranking_features(
@@ -233,7 +334,9 @@ class Ranker:
             dataset.customer_df,
             dataset.article_df,
             dataset.test_start_date,
-            all_embeddings,
+            article_item2vec_embs,
+            article_ttm_embs,
+            customer_ttm_embs,
             col_le,
         )
 
@@ -244,11 +347,12 @@ class Ranker:
             f"\nShape of the test data: {test_trans_df.shape}",
         )
 
-        self.train_trans_df = train_trans_df.sort_values("customer_id")
-        self.val_trans_df = val_trans_df.sort_values("customer_id")
-        self.test_trans_df = test_trans_df.sort_values("customer_id")
+        self.train_trans_df = train_trans_df.sort_values("group_id")
+        self.val_trans_df = val_trans_df.sort_values("group_id")
+        self.test_trans_df = test_trans_df.sort_values("group_id")
 
     def evaluate(self, result_dir: Path, dataset: Dataset) -> None:
+        logger.info("evaluate ranker")
         metrics_df_rows = []
         rec_results = []
         betas = np.arange(0.05, 1, 0.05)
@@ -267,15 +371,15 @@ class Ranker:
                 "article_id"
             ].values.tolist()
 
-            pred_items_rarank_list = []
-            for beta in betas:
-                pred_items_rerank = self.reranker.rerank(
-                    group_df.copy(),
-                    "interpolation",
-                    self.cfg.exp.num_rec,
-                    beta=beta,
-                )
-                pred_items_rarank_list.append([beta, pred_items_rerank])
+            # pred_items_rarank_list = []
+            # for beta in betas:
+            #     pred_items_rerank = self.reranker.rerank(
+            #         group_df.copy(),
+            #         "interpolation",
+            #         self.cfg.exp.num_rec,
+            #         beta=beta,
+            #     )
+            #     pred_items_rarank_list.append([beta, pred_items_rerank])
 
             rec_result = {
                 "customer_id": customer_id,
@@ -285,16 +389,16 @@ class Ranker:
                 "true_items": true_items,
                 "pred_items": pred_items,
             }
-            rec_result.update(
-                {f"pred_items:{data[0]}": data[1] for data in pred_items_rarank_list}
-            )
+            # rec_result.update(
+            #     {f"pred_items:{data[0]}": data[1] for data in pred_items_rarank_list}
+            # )
             rec_results.append(rec_result)
 
             for k in self.cfg.exp.ks:
                 metrics_df_rows.append(
                     [
                         self.__class__.__name__,
-                        0,
+                        # 0,
                         k,
                         self.metrics_calculator.precision_at_k(
                             true_items, pred_items[:k]
@@ -304,29 +408,29 @@ class Ranker:
                         self.metrics_calculator.ndcg_at_k(true_items, pred_items[:k]),
                     ]
                 )
-                for data in pred_items_rarank_list:
-                    metrics_df_rows.append(
-                        [
-                            self.__class__.__name__,
-                            data[0],
-                            k,
-                            self.metrics_calculator.precision_at_k(
-                                true_items, data[1][:k]
-                            ),
-                            self.metrics_calculator.recall_at_k(
-                                true_items, data[1][:k]
-                            ),
-                            self.metrics_calculator.ap_at_k(true_items, data[1][:k]),
-                            self.metrics_calculator.ndcg_at_k(true_items, data[1][:k]),
-                        ]
-                    )
+                # for data in pred_items_rarank_list:
+                #     metrics_df_rows.append(
+                #         [
+                #             self.__class__.__name__,
+                #             data[0],
+                #             k,
+                #             self.metrics_calculator.precision_at_k(
+                #                 true_items, data[1][:k]
+                #             ),
+                #             self.metrics_calculator.recall_at_k(
+                #                 true_items, data[1][:k]
+                #             ),
+                #             self.metrics_calculator.ap_at_k(true_items, data[1][:k]),
+                #             self.metrics_calculator.ndcg_at_k(true_items, data[1][:k]),
+                #         ]
+                #     )
 
         metrics_df = pd.DataFrame(
             metrics_df_rows,
-            columns=["model", "beta", "k", "precision", "recall", "map", "ndcg"],
+            columns=["model", "k", "precision", "recall", "map", "ndcg"],
         )
         metrics_df = (
-            metrics_df.groupby(["model", "beta", "k"])
+            metrics_df.groupby(["model", "k"])
             .agg(
                 precision=("precision", "mean"),
                 recall=("recall", "mean"),
@@ -339,72 +443,72 @@ class Ranker:
 
         for metric_name in ["precision", "recall", "map", "ndcg"]:
             fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-            sns.lineplot(metrics_df, x="beta", y=metric_name, hue="k", ax=ax)
+            sns.lineplot(metrics_df, x="k", y=metric_name, hue="model", ax=ax)
             fig.tight_layout()
             fig.savefig(
                 result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
             )
 
-        rec_results_df = pd.DataFrame(rec_results).set_index("customer_id")
-        past_items = rec_results_df["past_items"].to_dict()
-        true_items = rec_results_df["true_items"].to_dict()
-        all_items_catalog = dataset.past_trans_df["article_id"].unique()
-        sub_metrics_list = []
-        for i, pred_items_col in enumerate(
-            ["pred_items"] + [f"pred_items:{beta}" for beta in betas]
-        ):
-            pred_items = rec_results_df[pred_items_col].to_dict()
-            all_pred_items = [
-                item for sublist in pred_items.values() for item in sublist
-            ]
-            coverage = self.metrics_calculator.coverage(
-                set(all_pred_items), set(all_items_catalog)
-            )
-            gini = self.metrics_calculator.gini_index(all_pred_items)
-            dissimilarity = self.metrics_calculator.dissimilarity_score(pred_items)
-            novelty = self.metrics_calculator.novelty(
-                past_items.values(), pred_items.values()
-            )
-            serendipity = self.metrics_calculator.serendipity(
-                past_items, true_items, pred_items
-            )
-            if pred_items_col == "pred_items":
-                sub_metrics_list.append(
-                    {
-                        "beta": 0,
-                        "coverage": coverage,
-                        "gini": gini,
-                        "dissimilarity": dissimilarity,
-                        "novelty": novelty,
-                        "serendipity": serendipity,
-                    }
-                )
-            else:
-                sub_metrics_list.append(
-                    {
-                        "beta": betas[i - 1],
-                        "coverage": coverage,
-                        "gini": gini,
-                        "dissimilarity": dissimilarity,
-                        "novelty": novelty,
-                        "serendipity": serendipity,
-                    }
-                )
-        sub_metrics_df = pd.DataFrame(sub_metrics_list)
+        # rec_results_df = pd.DataFrame(rec_results).set_index("customer_id")
+        # past_items = rec_results_df["past_items"].to_dict()
+        # true_items = rec_results_df["true_items"].to_dict()
+        # all_items_catalog = dataset.past_trans_df["article_id"].unique()
+        # sub_metrics_list = []
+        # for i, pred_items_col in enumerate(
+        #     ["pred_items"] + [f"pred_items:{beta}" for beta in betas]
+        # ):
+        #     pred_items = rec_results_df[pred_items_col].to_dict()
+        #     all_pred_items = [
+        #         item for sublist in pred_items.values() for item in sublist
+        #     ]
+        #     coverage = self.metrics_calculator.coverage(
+        #         set(all_pred_items), set(all_items_catalog)
+        #     )
+        #     gini = self.metrics_calculator.gini_index(all_pred_items)
+        #     dissimilarity = self.metrics_calculator.dissimilarity_score(pred_items)
+        #     novelty = self.metrics_calculator.novelty(
+        #         past_items.values(), pred_items.values()
+        #     )
+        #     serendipity = self.metrics_calculator.serendipity(
+        #         past_items, true_items, pred_items
+        #     )
+        #     if pred_items_col == "pred_items":
+        #         sub_metrics_list.append(
+        #             {
+        #                 "beta": 0,
+        #                 "coverage": coverage,
+        #                 "gini": gini,
+        #                 "dissimilarity": dissimilarity,
+        #                 "novelty": novelty,
+        #                 "serendipity": serendipity,
+        #             }
+        #         )
+        #     else:
+        #         sub_metrics_list.append(
+        #             {
+        #                 "beta": betas[i - 1],
+        #                 "coverage": coverage,
+        #                 "gini": gini,
+        #                 "dissimilarity": dissimilarity,
+        #                 "novelty": novelty,
+        #                 "serendipity": serendipity,
+        #             }
+        #         )
+        # sub_metrics_df = pd.DataFrame(sub_metrics_list)
 
-        for metric_name in [
-            "coverage",
-            "gini",
-            "dissimilarity",
-            "novelty",
-            "serendipity",
-        ]:
-            fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-            sns.lineplot(sub_metrics_df, x="beta", y=metric_name, ax=ax)
-            fig.tight_layout()
-            fig.savefig(
-                result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
-            )
+        # for metric_name in [
+        #     "coverage",
+        #     "gini",
+        #     "dissimilarity",
+        #     "novelty",
+        #     "serendipity",
+        # ]:
+        #     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        #     sns.lineplot(sub_metrics_df, x="beta", y=metric_name, ax=ax)
+        #     fig.tight_layout()
+        #     fig.savefig(
+        #         result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
+        #     )
 
         # counts = list(Counter(all_pred_items).values())
         # counts_mmr_item2vec = list(Counter(all_pred_items_mmr_item2vec).values())

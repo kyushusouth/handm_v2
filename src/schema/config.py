@@ -4,6 +4,14 @@ import yaml
 from pydantic import BaseModel
 
 
+class DataCustomer(BaseModel):
+    usecols: list[str]
+
+
+class DataArticle(BaseModel):
+    usecols: list[str]
+
+
 class Data(BaseModel):
     articles_path: str
     customers_path: str
@@ -18,6 +26,8 @@ class Data(BaseModel):
     test_end_date: date
     chunksize: int
     num_customer: int
+    customer: DataCustomer
+    article: DataArticle
 
 
 class Popular(BaseModel):
@@ -28,12 +38,11 @@ class AgePopular(BaseModel):
     topk: int
 
 
-class MostFreqCatPopular(BaseModel):
+class Past(BaseModel):
     topk: int
 
 
-class Similar(BaseModel):
-    min_df: int
+class MostFreqCatPopular(BaseModel):
     topk: int
 
 
@@ -45,23 +54,18 @@ class COOC(BaseModel):
     topk: int
 
 
-class Node2Vec(BaseModel):
-    topk: int
-
-
-class Transition(BaseModel):
+class Faiss(BaseModel):
     topk: int
 
 
 class Candidates(BaseModel):
     popular: Popular
     age_popular: AgePopular
+    past: Past
     most_freq_cat_popular: MostFreqCatPopular
-    similar: Similar
     item2vec: Item2Vec
     cooc: COOC
-    node2vec: Node2Vec
-    transition: Transition
+    faiss: Faiss
     use: list[str]
 
 
@@ -114,12 +118,31 @@ class ParamsNode2Vec(BaseModel):
     min_count: int
 
 
+class ParamsTwoTowerModel(BaseModel):
+    user_num_cols: list[str]
+    item_num_cols: list[str]
+    user_cat_cols: list[str]
+    item_cat_cols: list[str]
+    cat_max_dims: int
+    item_cat_dims: list[int]
+    item_cat_hidden_size: int
+    item_num_hidden_size: int
+    user_cat_dims: list[int]
+    user_cat_hidden_size: int
+    user_num_hidden_size: int
+    emb_size: int
+    train_batch_size: int
+    num_workers: int
+    max_epoch: int
+
+
 class Params(BaseModel):
     lgb: ParamsLGBM
     cat: ParamsCatBoost
     item2vec: ParamsItem2Vec
     cooc: ParamsCooccurence
     node2vec: ParamsNode2Vec
+    ttm: ParamsTwoTowerModel
 
 
 class Model(BaseModel):

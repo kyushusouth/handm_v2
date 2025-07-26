@@ -2,13 +2,13 @@ import os
 import random
 
 import numpy as np
+import torch
 
 
-def set_seed(seed: int):
-    """
-    全ての乱数シードを固定するための関数。
-    実験の再現性を確保する。
-    """
+def set_seed(seed: int) -> None:
     random.seed(seed)
-    np.random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
