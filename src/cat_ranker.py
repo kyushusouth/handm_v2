@@ -28,7 +28,7 @@ class CatRanker(Ranker):
                 self.cfg.model.features.cat + self.cfg.model.features.num
             ],
             self.train_trans_df["purchased"],
-            group_id=self.train_trans_df["customer_id"].values,
+            group_id=self.train_trans_df["group_id"].values,
             cat_features=range(len(self.cfg.model.features.cat)),
         )
         val_pool = cat.Pool(
@@ -36,7 +36,7 @@ class CatRanker(Ranker):
                 self.cfg.model.features.cat + self.cfg.model.features.num
             ],
             self.val_trans_df["purchased"],
-            group_id=self.val_trans_df["customer_id"].values,
+            group_id=self.val_trans_df["group_id"].values,
             cat_features=range(len(self.cfg.model.features.cat)),
         )
         self.ranker = cat.CatBoostRanker(

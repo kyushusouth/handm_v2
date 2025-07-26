@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import faiss
@@ -9,6 +9,7 @@ import seaborn as sns
 
 from src.dataset import Dataset
 from src.logger import get_logger
+from src.metrics_calculator import MetricsCalculator
 from src.schema.config import Config
 
 logger = get_logger(__file__)
@@ -70,7 +71,7 @@ class CandidatesGenerator:
         user_past_items = (
             trans_df.sort_values("t_dat", ascending=False)
             .groupby("customer_id")["article_id"]
-            .apply(list)
+            .apply(lambda x: list(x)[: self.cfg.candidates.past.topk])
         )
         return user_past_items.to_dict()
 
@@ -161,16 +162,28 @@ class CandidatesGenerator:
             .reset_index()
             .sort_values(["article_id_x", "cnt"], ascending=[True, False])
             .groupby("article_id_x")
-            .agg(cooc_article_ids=("article_id_y", list))["cooc_article_ids"]
+            .apply(lambda df: dict(zip(df["article_id_y"], df["cnt"])))
             .to_dict()
         )
 
         candidates = defaultdict(list)
         for customer_id, group_df in past_trans_df.groupby("customer_id"):
-            for row in group_df.drop_duplicates("article_id").itertuples():
-                candidates[customer_id] += cooc_map.get(row.article_id, [])[
-                    : self.cfg.candidates.cooc.topk
-                ]
+            purchased_items = set(group_df["article_id"])
+            candidate_scores = Counter()
+            for article_id in purchased_items:
+                if article_id in cooc_map:
+                    candidate_scores.update(cooc_map[article_id])
+            for item in purchased_items:
+                if item in candidate_scores:
+                    del candidate_scores[item]
+            top_candidates = [
+                art_id
+                for art_id, _ in candidate_scores.most_common(
+                    self.cfg.candidates.cooc.topk
+                )
+            ]
+            candidates[customer_id] = top_candidates
+
         return candidates
 
     def generate_item2vec_candidates(
@@ -199,7 +212,7 @@ class CandidatesGenerator:
 
             user_emb = np.mean(np.stack(item_embs), axis=0)
             _, article_indices_mat = index_faiss.search(
-                np.stack([user_emb]), self.cfg.candidates.faiss.topk
+                np.stack([user_emb]), self.cfg.candidates.item2vec.topk
             )
             candidates[customer_id] = [
                 index_to_id[article_index]
@@ -333,7 +346,9 @@ class CandidatesGenerator:
 
         self.candidates_df = pd.DataFrame(candidate_sources).drop_duplicates()
 
-    def evaluate_candidates(self, dataset: Dataset, result_dir: Path) -> None:
+    def evaluate_candidates(
+        self, dataset: Dataset, result_dir: Path, metrics_calculator: MetricsCalculator
+    ) -> None:
         logger.info("evaluate generated candidates")
 
         eval_data = {
@@ -349,55 +364,101 @@ class CandidatesGenerator:
         }
 
         metrics = []
+        all_preds = (
+            self.candidates_df.groupby("customer_id")["article_id"].apply(set).to_dict()
+        )
+        metrics = []
         for kind, ground_truth in eval_data.items():
-            total_true_items = sum(len(s) for s in ground_truth.values())
-            for source_name in self.candidates_df["source"].unique():
-                source_candidates = self.candidates_df[
-                    self.candidates_df["source"] == source_name
-                ]
-                source_preds = (
-                    source_candidates.groupby("customer_id")["article_id"]
-                    .apply(set)
-                    .to_dict()
-                )
-                total_pred_items = sum(len(s) for s in source_preds.values())
-                hits = 0
-                for cid, true_items in ground_truth.items():
-                    pred_items = source_preds.get(cid, set())
-                    hits += len(true_items & pred_items)
+            for customer_id, true_items in ground_truth.items():
+                pred_items = all_preds[customer_id]
                 metrics.append(
                     {
                         "kind": kind,
-                        "source": source_name,
-                        "num_candidates": total_pred_items,
-                        "recall": hits / total_true_items,
+                        "customer_id": customer_id,
+                        "precision": metrics_calculator.precision_at_k(
+                            list(true_items), list(pred_items)
+                        ),
+                        "recall": metrics_calculator.recall_at_k(
+                            list(true_items), list(pred_items)
+                        ),
+                        "is_hit": 1 if len(pred_items & true_items) > 0 else 0,
                     }
                 )
 
-            all_preds = (
-                self.candidates_df.groupby("customer_id")["article_id"]
-                .apply(set)
-                .to_dict()
-            )
-            total_pred_items = sum(len(s) for s in all_preds.values())
-            all_hits = 0
-            for cid, true_items in ground_truth.items():
-                pred_items = all_preds.get(cid, set())
-                all_hits += len(true_items & pred_items)
-            metrics.append(
-                {
-                    "kind": kind,
-                    "source": "all",
-                    "num_candidates": total_pred_items,
-                    "recall": all_hits / total_true_items,
-                }
-            )
-
         metrics_df = pd.DataFrame(metrics)
+        metrics_df = metrics_df.groupby("kind").agg(
+            precision=("precision", "mean"),
+            recall=("recall", "mean"),
+            hit_rate=("is_hit", "mean"),
+        )
         metrics_df.to_csv(result_dir.joinpath("candidates_metrics.csv"))
 
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        sns.barplot(metrics_df, x="source", y="recall", hue="kind", ax=ax)
+        plt.figure(figsize=(12, 8))
+        sns.barplot(metrics_df, x="kind", y="precision")
+        plt.tight_layout()
+        plt.savefig(result_dir.joinpath("candidates_precision.png"))
+        plt.close()
+
+        plt.figure(figsize=(12, 8))
+        sns.barplot(metrics_df, x="kind", y="recall")
         plt.tight_layout()
         plt.savefig(result_dir.joinpath("candidates_recall.png"))
-        plt.close(fig)
+        plt.close()
+
+        plt.figure(figsize=(12, 8))
+        sns.barplot(metrics_df, x="kind", y="hit_rate")
+        plt.tight_layout()
+        plt.savefig(result_dir.joinpath("candidates_hit_rate.png"))
+        plt.close()
+
+        # total_true_items = sum(len(s) for s in ground_truth.values())
+        # for source_name in self.candidates_df["source"].unique():
+        #     source_candidates = self.candidates_df[
+        #         self.candidates_df["source"] == source_name
+        #     ]
+        #     source_preds = (
+        #         source_candidates.groupby("customer_id")["article_id"]
+        #         .apply(set)
+        #         .to_dict()
+        #     )
+        #     total_pred_items = sum(len(s) for s in source_preds.values())
+        #     hits = 0
+        #     for cid, true_items in ground_truth.items():
+        #         pred_items = source_preds.get(cid, set())
+        #         hits += len(true_items & pred_items)
+        #     metrics.append(
+        #         {
+        #             "kind": kind,
+        #             "source": source_name,
+        #             "num_candidates": total_pred_items,
+        #             "recall": hits / total_true_items,
+        #         }
+        #     )
+
+        # all_preds = (
+        #     self.candidates_df.groupby("customer_id")["article_id"]
+        #     .apply(set)
+        #     .to_dict()
+        # )
+        # total_pred_items = sum(len(s) for s in all_preds.values())
+        # all_hits = 0
+        # for cid, true_items in ground_truth.items():
+        #     pred_items = all_preds.get(cid, set())
+        #     all_hits += len(true_items & pred_items)
+        # metrics.append(
+        #     {
+        #         "kind": kind,
+        #         "source": "all",
+        #         "num_candidates": total_pred_items,
+        #         "recall": all_hits / total_true_items,
+        #     }
+        # )
+
+        # metrics_df = pd.DataFrame(metrics)
+        # metrics_df.to_csv(result_dir.joinpath("candidates_metrics.csv"))
+
+        # fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+        # sns.barplot(metrics_df, x="source", y="recall", hue="kind", ax=ax)
+        # plt.tight_layout()
+        # plt.savefig(result_dir.joinpath("candidates_recall.png"))
+        # plt.close(fig)

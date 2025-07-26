@@ -59,21 +59,23 @@ def main():
         dataset.past_trans_df
     )
 
-    ttm = TwoTowerModel(cfg)
-    ttm = train(cfg, ttm, dataset, result_dir)
-    article_ttm_embs, customer_ttm_embs = emb_generator.create_ttm_embeddings(
-        dataset, ttm
-    )
+    # ttm = TwoTowerModel(cfg)
+    # ttm = train(cfg, ttm, dataset, result_dir)
+    # article_ttm_embs, customer_ttm_embs = emb_generator.create_ttm_embeddings(
+    #     dataset, ttm
+    # )
+    article_ttm_embs = {}
+    customer_ttm_embs = {}
+
+    metrics_calculator = MetricsCalculator(cfg)
 
     cand_generator = CandidatesGenerator(cfg)
     cand_generator.generate_candidates(
         dataset, article_item2vec_embs, article_ttm_embs, customer_ttm_embs
     )
-    cand_generator.evaluate_candidates(dataset, result_dir)
+    cand_generator.evaluate_candidates(dataset, result_dir, metrics_calculator)
 
-    metrics_calculator = MetricsCalculator(cfg)
     cat_ranker = CatRanker(cfg, metrics_calculator)
-
     cat_ranker.preprocess(
         dataset,
         cand_generator.candidates_df,

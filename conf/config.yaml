@@ -3,16 +3,16 @@ data:
   articles_path: data/articles.csv
   customers_path: data/customers.csv
   transactions_path: data/transactions_train.csv
-  past_start_date: 2020-09-01
-  past_end_date: 2020-09-04
-  train_start_date: 2020-09-05
+  past_start_date: 2020-08-24
+  past_end_date: 2020-08-31
+  train_start_date: 2020-09-01
   train_end_date: 2020-09-05
   val_start_date: 2020-09-06
   val_end_date: 2020-09-06
   test_start_date: 2020-09-07
   test_end_date: 2020-09-07
   chunksize: 100000
-  num_customer: 1000
+  num_customer: 30000
   customer:
     usecols:
       [
@@ -45,34 +45,29 @@ data:
       ]
 candidates:
   popular:
-    topk: 30
+    topk: 20
   age_popular:
-    topk: 30
+    topk: 20
+  past:
+    topk: 20
   most_freq_cat_popular:
-    topk: 30
-  similar:
-    min_df: 3
-    topk: 30
+    topk: 20
   item2vec:
-    topk: 30
+    topk: 20
   cooc:
     topk: 20
-  node2vec:
-    topk: 30
-  transition:
-    topk: 30
   faiss:
-    topk: 30
+    topk: 50
   use:
     [
       "popular",
       "age_popular",
       "user_past",
       "most_freq_cat_popular",
-      "same_product",
+      # "same_product",
       "item2vec",
       "cooc",
-      "ttm",
+      # "ttm",
     ]
 model:
   features:
@@ -92,7 +87,6 @@ model:
         "user_item_purchase_cnt",
         "age",
         "item2vec_affinity_score",
-        "ttm_affinity_score",
       ]
     cat:
       [

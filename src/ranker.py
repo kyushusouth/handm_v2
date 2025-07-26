@@ -213,7 +213,7 @@ class Ranker:
             .merge(item_features, on="article_id", how="left")
         )
         df = self.merge_item2vec_feature(article_item2vec_embs, trans_df, df)
-        df = self.merge_ttm_feature(article_ttm_embs, customer_ttm_embs, df)
+        # df = self.merge_ttm_feature(article_ttm_embs, customer_ttm_embs, df)
         return df, col_le
 
     def preprocess(
@@ -226,18 +226,18 @@ class Ranker:
     ):
         logger.info("proprocess")
         train_trans_df = (
-            dataset.train_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
-            .drop_duplicates(["customer_id", "article_id"])
+            dataset.train_trans_df.drop(columns=["price", "sales_channel_id"])
+            .drop_duplicates(["t_dat", "customer_id", "article_id"])
             .copy()
         )
         val_trans_df = (
-            dataset.val_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
-            .drop_duplicates(["customer_id", "article_id"])
+            dataset.val_trans_df.drop(columns=["price", "sales_channel_id"])
+            .drop_duplicates(["t_dat", "customer_id", "article_id"])
             .copy()
         )
         test_trans_df = (
-            dataset.test_trans_df.drop(columns=["t_dat", "price", "sales_channel_id"])
-            .drop_duplicates(["customer_id", "article_id"])
+            dataset.test_trans_df.drop(columns=["price", "sales_channel_id"])
+            .drop_duplicates(["t_dat", "customer_id", "article_id"])
             .copy()
         )
 
@@ -245,15 +245,38 @@ class Ranker:
         val_trans_df["purchased"] = 1
         test_trans_df["purchased"] = 1
 
-        train_trans_df = candidates_df.merge(
-            train_trans_df, on=["customer_id", "article_id"], how="left"
-        ).fillna(0)
-        val_trans_df = candidates_df.merge(
-            val_trans_df, on=["customer_id", "article_id"], how="left"
-        ).fillna(0)
-        test_trans_df = candidates_df.merge(
-            test_trans_df, on=["customer_id", "article_id"], how="left"
-        ).fillna(0)
+        train_trans_df = (
+            candidates_df[["customer_id", "article_id"]]
+            .merge(
+                train_trans_df[["t_dat", "customer_id"]].drop_duplicates(),
+                on="customer_id",
+                how="inner",
+            )
+            .merge(
+                train_trans_df, on=["t_dat", "customer_id", "article_id"], how="left"
+            )
+            .fillna(0)
+        )
+        val_trans_df = (
+            candidates_df[["customer_id", "article_id"]]
+            .merge(
+                val_trans_df[["t_dat", "customer_id"]].drop_duplicates(),
+                on="customer_id",
+                how="inner",
+            )
+            .merge(val_trans_df, on=["t_dat", "customer_id", "article_id"], how="left")
+            .fillna(0)
+        )
+        test_trans_df = (
+            candidates_df[["customer_id", "article_id"]]
+            .merge(
+                test_trans_df[["t_dat", "customer_id"]].drop_duplicates(),
+                on="customer_id",
+                how="inner",
+            )
+            .merge(test_trans_df, on=["t_dat", "customer_id", "article_id"], how="left")
+            .fillna(0)
+        )
 
         train_trans_df = train_trans_df.merge(
             train_trans_df.groupby("customer_id")
@@ -271,14 +294,16 @@ class Ranker:
             on=["customer_id"],
             how="inner",
         )
-        test_trans_df = test_trans_df.merge(
-            test_trans_df.groupby("customer_id")
-            .agg(has_purchased_item=("purchased", "max"))
-            .query("has_purchased_item == 1")
-            .reset_index(drop=False)[["customer_id"]],
-            on=["customer_id"],
-            how="inner",
-        )
+
+        train_trans_df["group_id"] = train_trans_df.groupby(
+            ["t_dat", "customer_id"]
+        ).ngroup()
+        val_trans_df["group_id"] = val_trans_df.groupby(
+            ["t_dat", "customer_id"]
+        ).ngroup()
+        test_trans_df["group_id"] = test_trans_df.groupby(
+            ["t_dat", "customer_id"]
+        ).ngroup()
 
         col_le = {}
         train_trans_df, col_le = self.create_ranking_features(
@@ -322,9 +347,9 @@ class Ranker:
             f"\nShape of the test data: {test_trans_df.shape}",
         )
 
-        self.train_trans_df = train_trans_df.sort_values("customer_id")
-        self.val_trans_df = val_trans_df.sort_values("customer_id")
-        self.test_trans_df = test_trans_df.sort_values("customer_id")
+        self.train_trans_df = train_trans_df.sort_values("group_id")
+        self.val_trans_df = val_trans_df.sort_values("group_id")
+        self.test_trans_df = test_trans_df.sort_values("group_id")
 
     def evaluate(self, result_dir: Path, dataset: Dataset) -> None:
         logger.info("evaluate ranker")
