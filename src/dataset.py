@@ -68,6 +68,7 @@ class Dataset:
             usecols=cfg.data.customer.usecols,
         ):
             filtered_chunk = chunk.loc[chunk["customer_id"].isin(self.all_customers)]
+            # filtered_chunk = chunk
             if not filtered_chunk.empty:
                 filtered_chunks.append(filtered_chunk)
         self.customer_df = pd.concat(filtered_chunks)
@@ -82,9 +83,13 @@ class Dataset:
             usecols=cfg.data.article.usecols,
         ):
             filtered_chunk = chunk.loc[chunk["article_id"].isin(self.all_articles)]
+            # filtered_chunk = chunk
             if not filtered_chunk.empty:
                 filtered_chunks.append(filtered_chunk)
         self.article_df = pd.concat(filtered_chunks)
+
+        # self.all_customers = self.customer_df["customer_id"].unique()
+        # self.all_articles = self.article_df["article_id"].unique()
 
         self.past_trans_df = trans_df.loc[
             (self.past_start_date <= trans_df["t_dat"])

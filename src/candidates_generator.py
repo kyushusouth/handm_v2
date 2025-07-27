@@ -84,7 +84,7 @@ class CandidatesGenerator:
         logger.info("generate most frequent category popular items")
 
         df = trans_df.merge(
-            article_df[["article_id", "product_type_name"]], on="article_id"
+            article_df[["article_id", "product_type_name"]], on="article_id", how="left"
         )
 
         customer_cat_counts = (
@@ -410,55 +410,3 @@ class CandidatesGenerator:
         plt.tight_layout()
         plt.savefig(result_dir.joinpath("candidates_hit_rate.png"))
         plt.close()
-
-        # total_true_items = sum(len(s) for s in ground_truth.values())
-        # for source_name in self.candidates_df["source"].unique():
-        #     source_candidates = self.candidates_df[
-        #         self.candidates_df["source"] == source_name
-        #     ]
-        #     source_preds = (
-        #         source_candidates.groupby("customer_id")["article_id"]
-        #         .apply(set)
-        #         .to_dict()
-        #     )
-        #     total_pred_items = sum(len(s) for s in source_preds.values())
-        #     hits = 0
-        #     for cid, true_items in ground_truth.items():
-        #         pred_items = source_preds.get(cid, set())
-        #         hits += len(true_items & pred_items)
-        #     metrics.append(
-        #         {
-        #             "kind": kind,
-        #             "source": source_name,
-        #             "num_candidates": total_pred_items,
-        #             "recall": hits / total_true_items,
-        #         }
-        #     )
-
-        # all_preds = (
-        #     self.candidates_df.groupby("customer_id")["article_id"]
-        #     .apply(set)
-        #     .to_dict()
-        # )
-        # total_pred_items = sum(len(s) for s in all_preds.values())
-        # all_hits = 0
-        # for cid, true_items in ground_truth.items():
-        #     pred_items = all_preds.get(cid, set())
-        #     all_hits += len(true_items & pred_items)
-        # metrics.append(
-        #     {
-        #         "kind": kind,
-        #         "source": "all",
-        #         "num_candidates": total_pred_items,
-        #         "recall": all_hits / total_true_items,
-        #     }
-        # )
-
-        # metrics_df = pd.DataFrame(metrics)
-        # metrics_df.to_csv(result_dir.joinpath("candidates_metrics.csv"))
-
-        # fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        # sns.barplot(metrics_df, x="source", y="recall", hue="kind", ax=ax)
-        # plt.tight_layout()
-        # plt.savefig(result_dir.joinpath("candidates_recall.png"))
-        # plt.close(fig)

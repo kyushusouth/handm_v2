@@ -445,7 +445,9 @@ class Ranker:
         self.val_trans_df = val_trans_df.sort_values("group_id")
         self.test_trans_df = test_trans_df.sort_values("group_id")
 
-    def evaluate(self, result_dir: Path, dataset: Dataset) -> None:
+    def evaluate(
+        self, result_dir: Path, dataset: Dataset
+    ) -> list[dict[str, str | list[str] | np.ndarray]]:
         logger.info("evaluate ranker")
         metrics_df_rows = []
         rec_results = []
@@ -482,6 +484,7 @@ class Ranker:
                 )["article_id"].tolist(),
                 "true_items": true_items,
                 "pred_items": pred_items,
+                "pred_scores": y_pred,
             }
             # rec_result.update(
             #     {f"pred_items:{data[0]}": data[1] for data in pred_items_rarank_list}
@@ -543,7 +546,6 @@ class Ranker:
                 result_dir.joinpath(f"{self.__class__.__name__}_{metric_name}.png")
             )
 
-        # rec_results_df = pd.DataFrame(rec_results).set_index("customer_id")
         # past_items = rec_results_df["past_items"].to_dict()
         # true_items = rec_results_df["true_items"].to_dict()
         # all_items_catalog = dataset.past_trans_df["article_id"].unique()
@@ -655,3 +657,5 @@ class Ranker:
         # fig.tight_layout()
         # fig.savefig(result_dir.joinpath(f"{self.__class__.__name__}_lorenz_curve.png"))
         # plt.close(fig)
+
+        return rec_results
