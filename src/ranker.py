@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -23,36 +23,14 @@ class Ranker:
     ) -> None:
         self.cfg = cfg
         self.metrics_calculator = metrics_calculator
-
-    def create_user_features(
-        self, customer_df: pd.DataFrame, col_le: dict[str, LabelEncoder]
-    ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
-        logger.info("create user features")
-        user_feature_cols = [
+        self.user_feature_cols = [
             "FN",
             "Active",
             "club_member_status",
             "fashion_news_frequency",
             "age",
         ]
-        user_features = customer_df[["customer_id"] + user_feature_cols].copy()
-        for col in user_feature_cols:
-            if col == "age":
-                continue
-            if col in col_le:
-                le = col_le[col]
-                user_features[col] = le.transform(user_features[col].astype(str))
-            else:
-                le = LabelEncoder()
-                user_features[col] = le.fit_transform(user_features[col].astype(str))
-                col_le[col] = le
-        return user_features, col_le
-
-    def create_item_features(
-        self, article_df: pd.DataFrame, col_le: dict[str, LabelEncoder]
-    ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
-        logger.info("create item features")
-        item_feature_cols = [
+        self.item_feature_cols = [
             "colour_group_name",
             "department_name",
             "department_no",
@@ -66,8 +44,33 @@ class Ranker:
             "product_type_name",
             "section_name",
         ]
-        item_features = article_df[["article_id"] + item_feature_cols].copy()
-        for col in item_feature_cols:
+
+    def create_user_features(
+        self, customer_df: pd.DataFrame, col_le: dict[str, LabelEncoder]
+    ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
+        logger.info("create user features")
+        user_features = customer_df[["customer_id"] + self.user_feature_cols].copy()
+        for col in self.user_feature_cols:
+            if col == "age":
+                continue
+            if col in col_le:
+                le = col_le[col]
+                user_features[col] = le.transform(user_features[col].astype(str))
+            else:
+                le = LabelEncoder()
+                user_features[col] = le.fit_transform(user_features[col].astype(str))
+                col_le[col] = le
+        user_features = user_features.add_prefix("feature__").rename(
+            columns={"feature__customer_id": "customer_id"}
+        )
+        return user_features, col_le
+
+    def create_item_features(
+        self, article_df: pd.DataFrame, col_le: dict[str, LabelEncoder]
+    ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
+        logger.info("create item features")
+        item_features = article_df[["article_id"] + self.item_feature_cols].copy()
+        for col in self.item_feature_cols:
             if col in col_le:
                 le = col_le[col]
                 item_features[col] = le.transform(item_features[col].astype(str))
@@ -75,32 +78,111 @@ class Ranker:
                 le = LabelEncoder()
                 item_features[col] = le.fit_transform(item_features[col].astype(str))
                 col_le[col] = le
+        item_features = item_features.add_prefix("feature__").rename(
+            columns={"feature__article_id": "article_id"}
+        )
         return item_features, col_le
 
     def create_item_user_trans_feature(
-        self, trans_df: pd.DataFrame, ref_date: date
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        self,
+        trans_df: pd.DataFrame,
+        ref_date: date,
+        customer_df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         logger.info("create item user trans features")
         trans_df["days_since_purchase"] = (ref_date - trans_df["t_dat"]).dt.days
-        item_trans_features = trans_df.groupby("article_id").agg(
-            item_purchase_cnt=("customer_id", "size"),
-            item_purchase_nunique=("customer_id", "nunique"),
-            item_days_since_last_purchase=("days_since_purchase", "min"),
-            item_price_mean=("price", "mean"),
-            item_price_std=("price", "std"),
+
+        item_trans_features = (
+            trans_df.merge(customer_df, on="customer_id", how="left")
+            .groupby("article_id")
+            .agg(
+                feature__item_purchase_cnt=("customer_id", "size"),
+                feature__item_purchase_nunique=("customer_id", "nunique"),
+                feature__item_days_since_last_purchase=("days_since_purchase", "min"),
+                feature__item_price_sum=("price", "sum"),
+                feature__item_price_mean=("price", "mean"),
+                feature__item_price_std=("price", "std"),
+                feature__item_price_max=("price", "max"),
+                feature__item_price_min=("price", "min"),
+                feature__item_age_mean=("age", "mean"),
+                feature__item_age_std=("age", "std"),
+                feature__item_age_max=("age", "max"),
+                feature__item_age_min=("age", "min"),
+            )
         )
+
         user_trans_features = trans_df.groupby("customer_id").agg(
-            user_purchase_cnt=("article_id", "size"),
-            user_purchase_nunique=("article_id", "nunique"),
-            user_days_since_last_purchase=("days_since_purchase", "min"),
-            user_price_mean=("price", "mean"),
-            user_price_std=("price", "std"),
-            user_price_sum=("price", "sum"),
+            feature__user_purchase_cnt=("article_id", "size"),
+            feature__user_purchase_nunique=("article_id", "nunique"),
+            feature__user_days_since_last_purchase=("days_since_purchase", "min"),
+            feature__user_price_sum=("price", "sum"),
+            feature__user_price_mean=("price", "mean"),
+            feature__user_price_std=("price", "std"),
+            feature__user_price_min=("price", "min"),
+            feature__user_price_max=("price", "max"),
         )
-        item_user_trans_features = trans_df.groupby(["customer_id", "article_id"]).agg(
-            user_item_purchase_cnt=("customer_id", "size")
+        return item_trans_features, user_trans_features
+
+    def create_time_aware_features(
+        self,
+        trans_df: pd.DataFrame,
+        article_df: pd.DataFrame,
+        ref_date: date,
+    ) -> list[pd.DataFrame]:
+        logger.info(f"Creating time-aware features with ref_date: {ref_date}")
+
+        def time_decay_weight(days: np.ndarray, decay_rate: float) -> np.ndarray:
+            return np.exp(-decay_rate * days)
+
+        merged_df = trans_df.merge(article_df, on="article_id", how="left")
+        merged_df["days_since_purchase"] = (ref_date - merged_df["t_dat"]).dt.days
+        merged_df["time_weight"] = time_decay_weight(
+            merged_df["days_since_purchase"], self.cfg.model.features.time_decay_rate
         )
-        return item_trans_features, user_trans_features, item_user_trans_features
+        time_windows = {"1w": timedelta(weeks=1), "1m": timedelta(days=30)}
+        all_features = []
+
+        for name, delta in time_windows.items():
+            logger.info(f"Processing window: {name}")
+            if delta:
+                window_df = merged_df[
+                    merged_df["days_since_purchase"] < delta.days
+                ].copy()
+            else:
+                window_df = merged_df.copy()
+
+            if window_df.empty:
+                continue
+
+            user_item_features = window_df.groupby(["customer_id", "article_id"]).agg(
+                **{f"feature__user_item_purchase_cnt_{name}": ("customer_id", "size")},
+                **{
+                    f"feature__user_item_time_weighted_purchase_cnt_{name}": (
+                        "time_weight",
+                        "sum",
+                    )
+                },
+            )
+            all_features.append(user_item_features)
+
+            for cat_col in self.item_feature_cols:
+                user_cat_features = window_df.groupby(["customer_id", cat_col]).agg(
+                    **{
+                        f"feature__user_{cat_col}_purchase_cnt_{name}": (
+                            "customer_id",
+                            "size",
+                        )
+                    },
+                    **{
+                        f"feature__user_{cat_col}_time_weighted_purchase_cnt_{name}": (
+                            "time_weight",
+                            "sum",
+                        )
+                    },
+                )
+                all_features.append(user_cat_features)
+
+        return all_features
 
     def merge_item2vec_feature(
         self,
@@ -141,8 +223,8 @@ class Ranker:
         item_vectors = df.loc[valid_rows, item_vec_cols].values
         dot_products = (user_vectors * item_vectors).sum(axis=1)
 
-        df["item2vec_affinity_score"] = 0.0
-        df.loc[valid_rows, "item2vec_affinity_score"] = dot_products
+        df["feature__item2vec_affinity_score"] = 0.0
+        df.loc[valid_rows, "feature__item2vec_affinity_score"] = dot_products
         df = df.drop(columns=user_vec_cols + item_vec_cols)
         return df
 
@@ -179,8 +261,8 @@ class Ranker:
         item_vectors = df.loc[valid_rows, item_vec_cols].values
         dot_products = (user_vectors * item_vectors).sum(axis=1)
 
-        df["ttm_affinity_score"] = 0.0
-        df.loc[valid_rows, "ttm_affinity_score"] = dot_products
+        df["feature__ttm_affinity_score"] = 0.0
+        df.loc[valid_rows, "feature__ttm_affinity_score"] = dot_products
         df = df.drop(columns=user_vec_cols + item_vec_cols)
         return df
 
@@ -197,21 +279,30 @@ class Ranker:
         col_le: dict[str, LabelEncoder] | dict,
     ) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
         logger.info("create ranking features")
-        item_trans_features, user_trans_features, item_user_trans_features = (
-            self.create_item_user_trans_feature(trans_df.copy(), ref_date)
+        item_trans_features, user_trans_features = self.create_item_user_trans_feature(
+            trans_df.copy(), ref_date, customer_df
         )
         user_features, _ = self.create_user_features(customer_df, col_le)
         item_features, _ = self.create_item_features(article_df, col_le)
+        time_features_dfs = self.create_time_aware_features(
+            trans_df.copy(), article_df, ref_date
+        )
 
         df = (
             df.merge(item_trans_features, on="article_id", how="left")
             .merge(user_trans_features, on="customer_id", how="left")
-            .merge(
-                item_user_trans_features, on=["article_id", "customer_id"], how="left"
-            )
             .merge(user_features, on="customer_id", how="left")
             .merge(item_features, on="article_id", how="left")
         )
+
+        df = df.merge(article_df, on="article_id", how="left")
+        for time_features in time_features_dfs:
+            merge_key = time_features.index.names
+            df = df.merge(time_features.reset_index(), on=merge_key, how="left")
+        drop_cols = article_df.columns.tolist()
+        drop_cols.remove("article_id")
+        df = df.drop(columns=drop_cols)
+
         df = self.merge_item2vec_feature(article_item2vec_embs, trans_df, df)
         # df = self.merge_ttm_feature(article_ttm_embs, customer_ttm_embs, df)
         return df, col_le
@@ -319,7 +410,7 @@ class Ranker:
         )
         val_trans_df, col_le = self.create_ranking_features(
             val_trans_df,
-            dataset.past_trans_df,
+            pd.concat([dataset.past_trans_df, dataset.train_trans_df], axis=0),
             dataset.customer_df,
             dataset.article_df,
             dataset.val_start_date,
@@ -330,7 +421,10 @@ class Ranker:
         )
         test_trans_df, col_le = self.create_ranking_features(
             test_trans_df,
-            dataset.past_trans_df,
+            pd.concat(
+                [dataset.past_trans_df, dataset.train_trans_df, dataset.val_trans_df],
+                axis=0,
+            ),
             dataset.customer_df,
             dataset.article_df,
             dataset.test_start_date,

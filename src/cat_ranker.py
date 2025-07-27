@@ -70,8 +70,13 @@ class CatRanker(Ranker):
         feat_imp_df = self.ranker.get_feature_importance(
             train_pool, type="PredictionValuesChange", prettified=True
         )
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
-        sns.barplot(feat_imp_df, x="Importances", y="Feature Id")
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(20, 20))
+        sns.barplot(
+            feat_imp_df.nlargest(20, "Importances"),
+            x="Importances",
+            y="Feature Id",
+            ax=ax,
+        )
         plt.tight_layout()
         plt.savefig(
             result_dir.joinpath(f"{self.__class__.__name__}_feature_importance.png")
@@ -83,15 +88,19 @@ class CatRanker(Ranker):
             self.cfg.exp.summary_plot_num_sample, random_state=self.cfg.seed
         )[self.cfg.model.features.cat + self.cfg.model.features.num]
         shap_values = explainer.shap_values(shap_samples)
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+
         shap.summary_plot(shap_values, shap_samples, plot_type="bar", show=False)
+        fig = plt.gcf()
+        fig.set_size_inches(20, 20)
         plt.tight_layout()
         plt.savefig(
             result_dir.joinpath(f"{self.__class__.__name__}_shap_summary_plot_bar.png")
         )
         plt.close(fig)
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
+
         shap.summary_plot(shap_values, shap_samples, plot_type="dot", show=False)
+        fig = plt.gcf()
+        fig.set_size_inches(20, 20)
         plt.tight_layout()
         plt.savefig(
             result_dir.joinpath(f"{self.__class__.__name__}_shap_summary_plot_dot.png")

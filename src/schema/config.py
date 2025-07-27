@@ -72,6 +72,7 @@ class Candidates(BaseModel):
 class Features(BaseModel):
     num: list[str]
     cat: list[str]
+    time_decay_rate: float
 
 
 class ParamsLGBM(BaseModel):
