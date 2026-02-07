@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from src.dataset import Dataset as MyDataset
-from src.logger import get_logger
-from src.schema.config import Config
+from dataset import Dataset as MyDataset
+from logger import get_logger
+from schema.config import Config
 
 logger = get_logger(__file__)
 

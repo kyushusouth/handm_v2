@@ -4,10 +4,10 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from src.dataset import Dataset
-from src.logger import get_logger
-from src.schema.config import Config
-from src.two_tower_model import TTMItemDataset, TTMUserDataset, TwoTowerModel
+from dataset import Dataset
+from logger import get_logger
+from schema.config import Config
+from two_tower_model import TTMItemDataset, TTMUserDataset, TwoTowerModel
 
 logger = get_logger(__file__)
 

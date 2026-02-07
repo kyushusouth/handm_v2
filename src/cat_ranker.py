@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import shap
 
-from src.logger import get_logger
-from src.metrics_calculator import MetricsCalculator
-from src.ranker import Ranker
-from src.schema.config import Config
+from logger import get_logger
+from metrics_calculator import MetricsCalculator
+from ranker import Ranker
+from schema.config import Config
 
 logger = get_logger(__file__)
 

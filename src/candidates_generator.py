@@ -7,10 +7,10 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from src.dataset import Dataset
-from src.logger import get_logger
-from src.metrics_calculator import MetricsCalculator
-from src.schema.config import Config
+from dataset import Dataset
+from logger import get_logger
+from metrics_calculator import MetricsCalculator
+from schema.config import Config
 
 logger = get_logger(__file__)
 

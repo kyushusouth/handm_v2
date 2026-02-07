@@ -5,19 +5,19 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from src.candidates_generator import CandidatesGenerator
-from src.cat_ranker import CatRanker
-from src.dataset import Dataset
-from src.embedding_generator import EmbeddingGenerator
-from src.metrics_calculator import MetricsCalculator
-from src.mmr_reranker import MMRReranker
-from src.schema.config import Config
-from src.two_tower_model import (
+from candidates_generator import CandidatesGenerator
+from cat_ranker import CatRanker
+from dataset import Dataset
+from embedding_generator import EmbeddingGenerator
+from metrics_calculator import MetricsCalculator
+from mmr_reranker import MMRReranker
+from schema.config import Config
+from two_tower_model import (
     TwoTowerModel,
     define_cat_dim,
     train,
 )
-from src.utils import set_seed
+from utils import set_seed
 
 plt.rcParams["font.size"] = 18
 sns.set_style("whitegrid")
@@ -102,7 +102,7 @@ def main():
     purchase_cnt_df = dataset.past_trans_df.groupby("article_id").size()
     purchase_cnt_df = purchase_cnt_df / purchase_cnt_df.max()
     item_purchase_cnt_map = purchase_cnt_df.to_dict()
-    ws = [0.1, 0.5, 0.9]
+    ws = [1.0]
     metrics = []
     for w in ws:
         for rec_result in rec_results:
@@ -112,6 +112,8 @@ def main():
                 rec_result["pred_scores"],
                 w,
             )
+            if pred_items_rerank != rec_result["pred_items"]:
+                breakpoint()
             for k in cfg.exp.ks:
                 metrics.append(
                     {

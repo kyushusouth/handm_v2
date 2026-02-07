@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.schema.config import Config
+from schema.config import Config
 
 
 class MMRReranker:
@@ -15,9 +15,9 @@ class MMRReranker:
         pred_scores: np.ndarray,
         w: float,
     ) -> pd.DataFrame:
-        pred_scores = (pred_scores - pred_scores.min()) / (
-            pred_scores.max() - pred_scores.min()
-        )
+        # pred_scores = (pred_scores - pred_scores.min()) / (
+        #     pred_scores.max() - pred_scores.min()
+        # )
         seen = [False for _ in range(len(pred_items))]
         select_cnt = 0
         pred_items_rerank = []

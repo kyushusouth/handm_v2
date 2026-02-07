@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from src.schema.config import Config
+from schema.config import Config
 
 
 class MetricsCalculator:

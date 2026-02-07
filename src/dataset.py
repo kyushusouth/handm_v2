@@ -3,8 +3,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.logger import get_logger
-from src.schema.config import Config
+from logger import get_logger
+from schema.config import Config
 
 logger = get_logger(__file__)
 
